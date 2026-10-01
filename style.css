@@ -65,7 +65,11 @@ h1, h2, h3 { font-family: var(--serif); line-height: 1.2; margin: 0; }
   font-style: normal; font-size: .72rem; font-weight: 700; min-width: 20px; height: 20px; padding: 0 6px;
   display: grid; place-items: center; border-radius: 99px; background: var(--green); color: #fff;
 }
-.icon-btn { width: 40px; height: 40px; border-radius: 50%; font-size: 1.15rem; }
+.icon-btn { width: 40px; height: 40px; border-radius: 50%; font-size: 1.15rem; position: relative; }
+.icon-btn::after { content: ''; position: absolute; right: 7px; bottom: 7px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--bg); display: none; }
+.icon-btn.sync-ok::after { display: block; background: var(--green); }
+.icon-btn.sync-busy::after { display: block; background: #e0a526; }
+.icon-btn.sync-err::after { display: block; background: #c0392b; }
 .icon-btn:hover { background: var(--accent-soft); }
 
 /* ---------- Layout ---------- */
@@ -324,3 +328,7 @@ details[open] summary { color: var(--ink); }
 }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---------- Codice famiglia ---------- */
+.code { font: 700 1.15rem ui-monospace, "SFMono-Regular", Menlo, monospace; letter-spacing: .06em; text-align: center; background: var(--bg);
+  border: 1px dashed var(--line); border-radius: 12px; padding: 12px 8px; user-select: all; -webkit-user-select: all; overflow-wrap: anywhere; }

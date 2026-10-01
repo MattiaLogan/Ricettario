@@ -18,3 +18,11 @@ Dopo ogni modifica incrementa `VERSION` in `sw.js` (così i telefoni scaricano l
 ```
 git add -A && git commit -m "Aggiornamento" && git push
 ```
+
+## Servizi online (Cloudflare Worker `ricettario-import`)
+Il codice è in `worker/import-worker.js`. Fa due cose:
+- **Importazione ricette da link** (`GET /?url=…`).
+- **Sincronizzazione** tra dispositivi (`POST /sync`), che usa un database **D1** collegato al Worker con il nome `DB`.
+  Le tabelle si creano da sole. Il codice famiglia non viene mai inviato: arriva solo il suo hash.
+
+Per aggiornare il Worker: Cloudflare → Workers & Pages → `ricettario-import` → *Edit code* → incolla il file → *Deploy*.

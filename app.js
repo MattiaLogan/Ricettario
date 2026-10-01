@@ -90,9 +90,17 @@ function load() {
 }
 let state = load();
 
-function save() {
+/** Scrive i dati nel browser, senza avviare la sincronizzazione. */
+function persist() {
   try { localStorage.setItem(KEY, JSON.stringify(state)); return true; }
   catch { toast('Spazio pieno: impossibile salvare. Prova con foto più piccole.'); return false; }
+}
+/** Salva e, se la sincronizzazione è attiva, la fa partire a breve. */
+function save() {
+  if (state.sync?.code && !state.sync.dirtyAt) state.sync.dirtyAt = Date.now();   // quando è avvenuta la modifica
+  const ok = persist();
+  if (ok) scheduleSync();
+  return ok;
 }
 
 const ui = { tab: 'ricette', week: null, pick: null, q: '', cat: '', favOnly: false, viewId: null, servings: 0, checked: new Set(), edit: null, photo: '' };
@@ -651,6 +659,12 @@ $('#rv').addEventListener('close', () => { if (wake) { wake.release(); wake = nu
 const IMPORT_ENDPOINT = 'https://ricettario-import.mattia-subscriber.workers.dev';
 const importEndpoint = () => (localStorage.getItem('ricettario.importUrl') || IMPORT_ENDPOINT).trim().replace(/\/+$/, '');
 
+/** fetch con tempo massimo (AbortSignal.timeout non esiste sui Safari meno recenti). */
+function fetchTimeout(url, opts = {}, ms = 20000) {
+  const c = new AbortController(), t = setTimeout(() => c.abort(), ms);
+  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
+}
+
 const FRACTIONS = { '½': .5, '¼': .25, '¾': .75, '⅓': 1 / 3, '⅔': 2 / 3, '⅛': .125 };
 const UNIT_MAP = {
   g: 'g', gr: 'g', grammo: 'g', grammi: 'g', kg: 'kg', chilo: 'kg', chili: 'kg', ml: 'ml', l: 'l', lt: 'l', litro: 'l', litri: 'l', cl: 'cl', dl: 'dl',
@@ -766,7 +780,7 @@ async function importFromUrl(url) {
   if (!ep) throw new Error('NO_ENDPOINT');
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
   let res;
-  try { res = await fetch(`${ep}/?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(25000) }); }
+  try { res = await fetchTimeout(`${ep}/?url=${encodeURIComponent(url)}`, {}, 25000); }
   catch { throw new Error('Servizio di importazione non raggiungibile. Controlla la connessione e l\'indirizzo del servizio.'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.html) throw new Error(data.error || `Errore ${res.status}`);
@@ -831,6 +845,270 @@ async function doImportUrl() {
 }
 
 /* =========================================================
+   Sincronizzazione tra dispositivi
+   =========================================================
+   Ogni dato (ricetta, prodotto della spesa, pasto del piano) è un'"entità" con id.
+   Per ognuna si ricorda l'impronta dell'ultima versione sincronizzata (state.sync.meta):
+   se cambia, l'entità è da inviare con la data di modifica; se sparisce, si invia una cancellazione.
+   Le modifiche ricevute sostituiscono quelle locali solo se più recenti (vince l'ultima).
+   Il codice famiglia non viene mai inviato: al servizio arriva solo il suo hash SHA-256. */
+const SYNC_OVERLAP = 5_000_000;   // 5 s (in microsecondi del server): rilegge un po' indietro per non perdere nulla
+const SYNC_CHUNK_BYTES = 2_500_000, SYNC_CHUNK_ITEMS = 100;
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+let syncing = false, syncAgain = false, syncTimer = null;
+const syncUi = { s: 'off', msg: '', at: 0 };
+
+/** Serializzazione con chiavi ordinate: due oggetti uguali danno sempre lo stesso testo. */
+function canon(v) {
+  if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
+  if (v && typeof v === 'object') {
+    return '{' + Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}';
+  }
+  return JSON.stringify(v);
+}
+function hash53(str) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+async function spaceId(code) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('ricettario:' + code));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function newSyncCode() {
+  const bytes = crypto.getRandomValues(new Uint8Array(20));
+  return [...bytes].map(b => CODE_ALPHABET[b % 32]).join('');
+}
+const prettyCode = c => c.match(/.{1,4}/g).join('-');
+/** Accetta il codice con trattini, spazi, minuscole o dentro un messaggio; restituisce '' se non valido. */
+function normalizeCode(s) {
+  const up = String(s || '').toUpperCase();
+  const m = up.match(/(?:[A-Z2-9]{4}-){4}[A-Z2-9]{4}/);
+  const cand = (m ? m[0] : up).replace(/[\s-]/g, '');
+  return new RegExp('^[' + CODE_ALPHABET + ']{20}$').test(cand) ? cand : '';
+}
+
+/* ---------- Entità locali ---------- */
+function localEntities() {
+  const m = new Map();
+  state.recipes.forEach(r => m.set('recipe:' + r.id, r));
+  state.shopping.forEach(i => m.set('shop:' + i.id, i));
+  Object.entries(state.plan).forEach(([date, day]) =>
+    SLOTS.forEach(([slot]) => (day[slot] || []).forEach(e => m.set('plan:' + e.id, { ...e, date, slot }))));
+  return m;
+}
+
+function removeEntity(kind, id) {
+  if (kind === 'recipe') state.recipes = state.recipes.filter(r => r.id !== id);
+  else if (kind === 'shop') state.shopping = state.shopping.filter(i => i.id !== id);
+  else if (kind === 'plan') removePlanEntry(id);
+}
+function removePlanEntry(id) {
+  Object.keys(state.plan).forEach(date => {
+    const day = state.plan[date];
+    SLOTS.forEach(([s]) => { if (day[s]) day[s] = day[s].filter(e => e.id !== id); });
+    if (SLOTS.every(([s]) => !(day[s] || []).length)) delete state.plan[date];
+  });
+}
+function upsertEntity(kind, id, data) {
+  if (kind === 'recipe' || kind === 'shop') {
+    const list = kind === 'recipe' ? state.recipes : state.shopping, k = list.findIndex(x => x.id === id);
+    k >= 0 ? list[k] = data : list.push(data);
+  } else if (kind === 'plan') {
+    removePlanEntry(id);
+    const { date, slot, ...entry } = data;
+    if (!date || !SLOTS.some(([s]) => s === slot)) return;
+    const day = state.plan[date] = state.plan[date] || {};
+    (day[slot] = day[slot] || []).push(entry);
+  }
+}
+
+/** Le ricette di esempio mai modificate: sul dispositivo che si unisce a uno spazio vengono scartate. */
+const sampleKey = r => canon({ title: r.title, category: r.category, servings: r.servings, prepMin: r.prepMin, cookMin: r.cookMin,
+  cookMethod: r.cookMethod, difficulty: r.difficulty, ingredients: r.ingredients, steps: r.steps, notes: r.notes });
+const isUnmodifiedSample = r => { const k = sampleKey(r); return seed().some(s => sampleKey(s) === k); };
+
+/* ---------- Comunicazione ---------- */
+async function syncPost(body) {
+  const ep = importEndpoint();
+  if (!ep) throw new Error('Servizio non configurato');
+  let res;
+  try {
+    res = await fetchTimeout(`${ep}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 30000);
+  } catch {
+    const e = new Error('Nessuna connessione'); e.offline = true; throw e;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Errore ${res.status}`);
+  return data;
+}
+
+function setSyncStatus(s, msg = '') {
+  syncUi.s = s; syncUi.msg = msg; if (s === 'ok') syncUi.at = Date.now();
+  const b = document.querySelector('[data-act="backup"]');
+  if (b) {
+    b.classList.toggle('sync-ok', s === 'ok'); b.classList.toggle('sync-busy', s === 'busy'); b.classList.toggle('sync-err', s === 'err');
+    b.title = s === 'off' ? 'Impostazioni' : 'Sincronizzazione: ' + syncText();
+  }
+  const el = $('#syncStatus'); if (el) el.innerHTML = syncText();
+}
+function syncText() {
+  if (syncUi.s === 'busy') return '⏳ Sincronizzazione in corso…';
+  if (syncUi.s === 'err') return '⚠️ ' + esc(syncUi.msg);
+  if (syncUi.s === 'ok') return '✔ Tutto aggiornato' + (syncUi.at ? ' · ' + new Date(syncUi.at).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '');
+  return 'Non attiva';
+}
+
+function scheduleSync(delay = 1500) {
+  if (!state.sync?.code) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncNow, delay);
+}
+
+/** Un ciclo completo: rileva le modifiche locali, le invia, riceve quelle degli altri e le applica. */
+async function syncNow() {
+  const sy = state.sync;
+  if (!sy?.code) return;
+  if (syncing) { syncAgain = true; return; }
+  syncing = true; setSyncStatus('busy');
+  try {
+    const space = await spaceId(sy.code);
+
+    // 1. cosa è cambiato qui da ultima volta
+    // (la data è quella della modifica, non della sincronizzazione: conta se si è lavorato senza rete)
+    const local = localEntities(), stamp = sy.dirtyAt || Date.now();
+    sy.dirtyAt = 0;
+    const next = m => Math.max(stamp, (m?.updated || 0) + 1);
+    for (const [key, data] of local) {
+      const h = hash53(canon(data)), m = sy.meta[key];
+      if (!m || m.deleted || m.h !== h) sy.meta[key] = { h, updated: next(m), dirty: true };
+    }
+    for (const [key, m] of Object.entries(sy.meta)) {
+      if (!m.deleted && !local.has(key)) sy.meta[key] = { deleted: true, updated: next(m), dirty: true };
+    }
+    persist();
+
+    // 2. invio a blocchi (le foto rendono pesanti alcune ricette) + ricezione
+    const queue = Object.entries(sy.meta).filter(([, m]) => m.dirty).map(([key, m]) => {
+      const [k, ...rest] = key.split(':'), i = rest.join(':');
+      return m.deleted ? { k, i, x: true, u: m.updated } : { k, i, d: local.get(key), u: m.updated };
+    });
+    const chunks = [[]];
+    let size = 0;
+    for (const c of queue) {
+      const n = c.d ? canon(c.d).length : 50;
+      if (chunks[chunks.length - 1].length && (size + n > SYNC_CHUNK_BYTES || chunks[chunks.length - 1].length >= SYNC_CHUNK_ITEMS)) { chunks.push([]); size = 0; }
+      chunks[chunks.length - 1].push(c); size += n;
+    }
+
+    let cursor = Math.max(0, (sy.since || 0) - SYNC_OVERLAP), maxSrv = sy.since || 0, changed = new Set();
+    const pull = async changes => {
+      for (;;) {
+        const res = await syncPost({ action: 'sync', space, since: cursor, changes });
+        changes = [];
+        applyRows(res.rows, changed);
+        const last = res.rows.length ? res.rows[res.rows.length - 1].s : cursor;
+        maxSrv = Math.max(maxSrv, last);
+        if (!res.more || last <= cursor) break;
+        cursor = last;
+      }
+    };
+    for (const ch of chunks) {
+      await pull(ch);
+      ch.forEach(c => { const m = sy.meta[c.k + ':' + c.i]; if (m && m.updated === c.u) delete m.dirty; });
+    }
+    sy.since = maxSrv;
+    persist();
+    setSyncStatus('ok');
+    if (changed.size) refreshAfterSync(changed);
+  } catch (e) {
+    setSyncStatus('err', e.offline ? 'Nessuna connessione: riprovo appena possibile' : e.message);
+    persist();
+  } finally {
+    syncing = false;
+    if (syncAgain) { syncAgain = false; scheduleSync(300); }
+  }
+}
+
+function applyRows(rows, changed) {
+  const sy = state.sync;
+  for (const r of rows) {
+    const key = r.k + ':' + r.i, m = sy.meta[key];
+    if (m && m.updated >= r.u) continue;           // la versione locale è uguale o più recente
+    if (r.x) { removeEntity(r.k, r.i); sy.meta[key] = { deleted: true, updated: r.u }; }
+    else { upsertEntity(r.k, r.i, r.d); sy.meta[key] = { h: hash53(canon(r.d)), updated: r.u }; }
+    changed.add(r.k);
+  }
+}
+
+/** Aggiorna lo schermo dopo modifiche arrivate dagli altri, senza disturbare chi sta scrivendo. */
+function refreshAfterSync(kinds) {
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.value && ($('#view').contains(a) || $('#pk').contains(a))) {
+    setTimeout(() => refreshAfterSync(kinds), 3000);   // sta scrivendo: riprova tra poco
+    return;
+  }
+  if ($('#ed').open) return;                           // editor aperto: non lo tocco
+  render();
+  if ($('#rv').open && kinds.has('recipe')) {
+    if (recipeById(ui.viewId)) renderRecipeDialog(); else $('#rv').close();
+  }
+}
+
+/* ---------- Attivazione dal dialog ⚙️ ---------- */
+async function startSync(code, mode) {
+  const space = await spaceId(code);
+  await syncPost({ action: mode === 'create' ? 'create' : 'join', space });
+  if (mode === 'join') state.recipes = state.recipes.filter(r => !isUnmodifiedSample(r));
+  state.sync = { code, since: 0, meta: {} };
+  persist();
+  syncNow();
+}
+
+function syncBlock() {
+  if (!importEndpoint()) return '';
+  if (!state.sync?.code) return `
+    <h3>☁️ Sincronizzazione</h3>
+    <p class="hint">Tieni ricette, piano settimanale e lista della spesa uguali su telefono e computer, anche con altre persone.</p>
+    <div class="stack">
+      <button class="btn primary" data-act="sync-create">✨ Crea lo spazio famiglia</button>
+      <button class="btn" data-act="sync-join">🔑 Ho già un codice</button>
+    </div><p class="hint" id="syncMsg" role="status"></p><hr>`;
+  return `
+    <h3>☁️ Sincronizzazione</h3>
+    <p class="hint" id="syncStatus">${syncText()}</p>
+    <details><summary>🔑 Codice famiglia</summary>
+      <p class="hint" style="margin:10px 0 6px">Chi ha questo codice può leggere e modificare tutto: condividilo solo con la famiglia.</p>
+      <div class="code">${esc(prettyCode(state.sync.code))}</div>
+      <div class="stack" style="margin-top:10px">
+        <button class="btn sm" data-act="sync-share">📤 Invia il codice</button>
+        <button class="btn sm" data-act="sync-copy">📋 Copia</button>
+      </div></details>
+    <div class="stack">
+      <button class="btn" data-act="sync-now">🔄 Sincronizza adesso</button>
+      <button class="btn sm danger" data-act="sync-off">Scollega questo dispositivo</button>
+    </div><p class="hint" id="syncMsg" role="status"></p><hr>`;
+}
+
+function openSyncJoin() {
+  $('#bk').innerHTML = `<div class="rv-body">
+    <button class="close" data-act="close" style="position:static;float:none;margin:0 0 -10px auto;display:block" aria-label="Chiudi">✕</button>
+    <h2>Inserisci il codice</h2>
+    <p class="hint">Usa il codice famiglia creato sull'altro dispositivo (20 caratteri). Puoi incollare anche tutto il messaggio che ti hanno inviato.</p>
+    <form class="stack" id="syncJoinForm">
+      <input class="inp" id="syncCode" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Codice famiglia">
+      <button class="btn primary" id="syncJoinBtn">Collegati</button>
+    </form><p class="hint" id="syncMsg" role="status"></p></div>`;
+  $('#syncCode').focus();
+}
+
+/* =========================================================
    Installazione come app (PWA)
    ========================================================= */
 let installEvt = null;
@@ -857,11 +1135,12 @@ function installBlock() {
 function openBackup() {
   $('#bk').innerHTML = `<div class="rv-body">
     <button class="close" data-act="close" style="position:static;float:none;margin:0 0 -10px auto;display:block" aria-label="Chiudi">✕</button>
-    <h2>App e backup</h2>
+    <h2>App e sincronizzazione</h2>
     <div class="stack">${installBlock()}</div>
     <hr>
+    ${syncBlock()}
     <h3>Backup e ripristino</h3>
-    <p class="hint">I dati sono salvati solo in questo browser. Scarica un backup ogni tanto, e usalo per spostare le ricette su un altro dispositivo.</p>
+    <p class="hint">${state.sync?.code ? 'Con la sincronizzazione i dati sono anche online, ma un backup ogni tanto non guasta.' : 'I dati sono salvati solo in questo browser. Scarica un backup ogni tanto, e usalo per spostare le ricette su un altro dispositivo.'}</p>
     <div class="stack">
       <button class="btn primary" data-act="export">⬇️ Scarica backup (.json)</button>
       <label class="btn">⬆️ Ripristina da backup<input type="file" id="restoreIn" accept="application/json,.json" hidden></label>
@@ -959,6 +1238,28 @@ document.addEventListener('click', async e => {
     /* backup */
     case 'backup': openBackup(); break;
     case 'export': exportData(); break;
+
+    /* sincronizzazione */
+    case 'sync-create': case 'sync-join': {
+      if (act === 'sync-join') { openSyncJoin(); break; }
+      const msg = $('#syncMsg'); msg.textContent = 'Creo lo spazio…';
+      try { await startSync(newSyncCode(), 'create'); openBackup(); toast('Spazio creato ✔ Ora invia il codice agli altri'); }
+      catch (err) { msg.textContent = err.offline ? 'Nessuna connessione.' : err.message; }
+      break;
+    }
+    case 'sync-now': syncNow(); break;
+    case 'sync-copy': copy(prettyCode(state.sync.code), 'Codice copiato ✔'); break;
+    case 'sync-share': {
+      const text = `Codice famiglia del Ricettario: ${prettyCode(state.sync.code)}\n\nApri ${location.origin}${location.pathname}, installa l'app e poi vai in ⚙️ → "Ho già un codice".`;
+      if (navigator.share) { try { await navigator.share({ text }); } catch { /* annullato */ } }
+      else window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank');
+      break;
+    }
+    case 'sync-off':
+      if (confirm('Scollegare questo dispositivo?\nLe ricette e la lista restano qui, ma non saranno più allineate con gli altri dispositivi.')) {
+        state.sync = null; persist(); setSyncStatus('off'); openBackup();
+      }
+      break;
     case 'install':
       if (installEvt) { installEvt.prompt(); await installEvt.userChoice.catch(() => {}); installEvt = null; $('#bk').close(); }
       break;
@@ -988,7 +1289,7 @@ document.addEventListener('change', async e => {
     try {
       const data = JSON.parse(await t.files[0].text());
       if (!Array.isArray(data.recipes)) throw 0;
-      if (confirm(`Sostituire i dati attuali con il backup (${data.recipes.length} ricette)?`)) {
+      if (confirm(`Sostituire i dati attuali con il backup (${data.recipes.length} ricette)?` + (state.sync?.code ? '\n\nLa sincronizzazione è attiva: la sostituzione si propagherà anche agli altri dispositivi.' : ''))) {
         state.recipes = data.recipes; state.shopping = Array.isArray(data.shopping) ? data.shopping : [];
         state.plan = data.plan && typeof data.plan === 'object' ? data.plan : {};
         save(); $('#bk').close(); render(); toast('Backup ripristinato ✔');
@@ -1003,6 +1304,14 @@ document.addEventListener('submit', e => {
   const f = e.target;
   if (f.id === 'edForm') saveRecipe(f);
   else if (f.id === 'imForm') doImportUrl();
+  else if (f.id === 'syncJoinForm') {
+    const code = normalizeCode($('#syncCode').value), msg = $('#syncMsg');
+    if (!code) { msg.textContent = 'Il codice deve avere 20 caratteri (lettere e numeri).'; return; }
+    $('#syncJoinBtn').disabled = true; msg.textContent = 'Mi collego…';
+    startSync(code, 'join')
+      .then(() => { openBackup(); toast('Collegato ✔ Sto scaricando i dati…'); })
+      .catch(err => { msg.textContent = err.offline ? 'Nessuna connessione.' : err.message; $('#syncJoinBtn').disabled = false; });
+  }
   else if (f.id === 'imTextForm') {
     try {
       const draft = recipeFromText($('#imText').value);
@@ -1039,6 +1348,11 @@ document.addEventListener('keydown', e => {
    Avvio (compresa l'importazione da link #lista=…)
    ========================================================= */
 render();
+
+if (state.sync?.code) { setSyncStatus('busy'); syncNow(); }
+setInterval(() => { if (document.visibilityState === 'visible' && state.sync?.code) syncNow(); }, 20000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { scheduleSync(300); tick(); } });
+window.addEventListener('online', () => scheduleSync(300));
 
 if (location.hash.startsWith('#lista=')) {
   const code = location.hash.slice(1);
