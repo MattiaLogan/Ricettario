@@ -256,6 +256,14 @@ form.ed h2 { font-size: 1.7rem; }
 .hint { color: var(--muted); font-size: .88rem; margin: 0; }
 hr { border: 0; border-top: 1px solid var(--line); width: 100%; margin: 4px 0; }
 
+/* ---------- Importazione ---------- */
+.inp { width: 100%; padding: 12px 16px; border-radius: 14px; border: 1px solid var(--line); background: var(--card); color: var(--ink); outline: none; }
+.inp:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+textarea.inp { resize: vertical; }
+details { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; }
+details summary { cursor: pointer; font-weight: 600; color: var(--muted); }
+details[open] summary { color: var(--ink); }
+
 /* ---------- Piano settimanale ---------- */
 .week-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .week-nav .wl { flex: 1; text-align: center; display: flex; flex-direction: column; line-height: 1.25; }

@@ -133,6 +133,7 @@ function renderRecipes() {
     <div class="toolbar">
       <input id="search" type="search" placeholder="Cerca per nome, categoria o ingrediente…" value="${esc(ui.q)}" autocomplete="off">
       <button class="chip ${ui.favOnly ? 'on' : ''}" data-act="favfilter">♥ Preferite</button>
+      <button class="chip" data-act="import-recipe">🔗 Da link</button>
     </div>
     <div class="chips" id="chips"></div>
     <div class="grid" id="grid"></div>`;
@@ -268,14 +269,16 @@ const stepRow = (s = {}) => `<div class="row step">
   <input class="m" type="number" min="0" placeholder="⏱ min" value="${+s.minutes || ''}" title="Minuti per un timer (facoltativo)" aria-label="Minuti timer">
   <button type="button" class="x" data-act="rm-row" aria-label="Rimuovi">✕</button></div>`;
 
-function openEditor(id) {
+/** `draft`: ricetta importata da mostrare nell'editor come nuova (non ancora salvata). */
+function openEditor(id, draft) {
   const r = id ? recipeById(id) : null;
-  ui.edit = id || null; ui.photo = r?.photo || '';
+  ui.edit = id || null; ui.photo = r?.photo || draft?.photo || '';
   $('#cats').innerHTML = allCats().map(c => `<option value="${esc(c)}">`).join('');
-  const v = r || { title: '', category: '', servings: 4, prepMin: '', cookMin: '', cookMethod: '', difficulty: '', ingredients: [{}, {}, {}], steps: [{}], notes: '' };
+  const v = r || draft || { title: '', category: '', servings: 4, prepMin: '', cookMin: '', cookMethod: '', difficulty: '', ingredients: [{}, {}, {}], steps: [{}], notes: '' };
 
   $('#ed').innerHTML = `<form class="ed" id="edForm" autocomplete="off">
-    <h2>${r ? 'Modifica ricetta' : 'Nuova ricetta'}</h2>
+    <h2>${r ? 'Modifica ricetta' : draft ? 'Controlla la ricetta importata' : 'Nuova ricetta'}</h2>
+    ${draft ? '<p class="hint" style="margin:-8px 0 0">Verifica ingredienti e passaggi, poi salva. Nulla è stato ancora aggiunto al ricettario.</p>' : ''}
     <label class="field"><span>Titolo *</span><input name="title" required maxlength="120" value="${esc(v.title)}" placeholder="Es. Lasagne alla bolognese"></label>
     <div class="grid2">
       <label class="field"><span>Categoria</span><input name="category" list="cats" value="${esc(v.category)}" placeholder="Es. Primi"></label>
@@ -643,6 +646,177 @@ $('#rv').addEventListener('close', () => { if (wake) { wake.release(); wake = nu
    Backup
    ========================================================= */
 /* =========================================================
+   Importazione ricette da link
+   ========================================================= */
+const IMPORT_ENDPOINT = ''; // es. 'https://ricettario-import.NOME.workers.dev'
+const importEndpoint = () => (localStorage.getItem('ricettario.importUrl') || IMPORT_ENDPOINT).trim().replace(/\/+$/, '');
+
+const FRACTIONS = { '½': .5, '¼': .25, '¾': .75, '⅓': 1 / 3, '⅔': 2 / 3, '⅛': .125 };
+const UNIT_MAP = {
+  g: 'g', gr: 'g', grammo: 'g', grammi: 'g', kg: 'kg', chilo: 'kg', chili: 'kg', ml: 'ml', l: 'l', lt: 'l', litro: 'l', litri: 'l', cl: 'cl', dl: 'dl',
+  cucchiaio: 'cucchiaio', cucchiai: 'cucchiai', cucchiaino: 'cucchiaino', cucchiaini: 'cucchiaini', pizzico: 'pizzico',
+  spicchio: 'spicchio', spicchi: 'spicchi', foglia: 'foglia', foglie: 'foglie', bicchiere: 'bicchiere', bicchieri: 'bicchieri',
+  tazza: 'tazza', tazze: 'tazze', tazzina: 'tazzina', bustina: 'bustina', bustine: 'bustine', pz: 'pz', pezzi: 'pz', pezzo: 'pz',
+  rametto: 'rametto', rametti: 'rametti', ciuffo: 'ciuffo', noce: 'noce', fetta: 'fetta', fette: 'fette'
+};
+
+/** Toglie tag HTML ed entità (&amp;, &#39; …) e normalizza gli spazi. */
+const decodeHtml = s => new DOMParser().parseFromString(String(s ?? ''), 'text/html').documentElement.textContent.replace(/\s+/g, ' ').trim();
+
+function isoMinutes(s) {
+  const m = String(s || '').match(/^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?/i);
+  return m ? (+m[1] || 0) * 1440 + (+m[2] || 0) * 60 + (+m[3] || 0) : 0;
+}
+
+/** "200 g di farina" → { qty: '200', unit: 'g', name: 'farina' } */
+function parseIngredient(line) {
+  let s = decodeHtml(line).replace(/(\d+)?\s*([½¼¾⅓⅔⅛])/, (_, w, f) => String((+w || 0) + FRACTIONS[f]));
+  const whole = { qty: '', unit: '', name: s };
+  let m = s.match(/^q\.?\s?b\.?\s+(?:di\s+|d')?(.+)$/i);
+  if (m) return { qty: '', unit: 'q.b.', name: m[1] };
+  m = s.match(/^(.+?)[\s,]+q\.?\s?b\.?$/i);
+  if (m) return { qty: '', unit: 'q.b.', name: m[1] };
+
+  let qty, rest;
+  if ((m = s.match(/^(\d+)\s+(\d+)\/(\d+)\s*(.*)$/))) { qty = +m[1] + m[2] / m[3]; rest = m[4]; }
+  else if ((m = s.match(/^(\d+)\/(\d+)\s*(.*)$/))) { qty = m[1] / m[2]; rest = m[3]; }
+  else if ((m = s.match(/^(\d+(?:[.,]\d+)?)\s*(.*)$/))) { qty = parseFloat(m[1].replace(',', '.')); rest = m[2]; }
+  else return whole;
+  if (/^[-–]\s*\d/.test(rest) || !rest) return whole;       // intervalli ("2-3 uova") o solo numero
+
+  let unit = '';
+  const u = rest.match(/^([A-Za-zàèéìòù]+)\.?\s*(.*)$/);
+  if (u && UNIT_MAP[u[1].toLowerCase()] && u[2]) { unit = UNIT_MAP[u[1].toLowerCase()]; rest = u[2]; }
+  rest = rest.replace(/^(?:di|d')\s*/i, '').trim();
+  return rest ? { qty: fmtQty(qty), unit, name: rest } : whole;
+}
+
+function flattenSteps(x, out = []) {
+  if (!x) return out;
+  if (typeof x === 'string') {
+    x.replace(/<\/(?:p|li|div)>|<br\s*\/?>/gi, '\n').split(/\n+/).forEach(t => {
+      t = decodeHtml(t).replace(/^\s*(?:passo|step)?\s*\d+\s*[.):\-]\s*/i, '');
+      if (t) out.push(t);
+    });
+  } else if (Array.isArray(x)) x.forEach(i => flattenSteps(i, out));
+  else if (x.itemListElement) flattenSteps(x.itemListElement, out);
+  else if (x.text || x.name) flattenSteps(x.text || x.name, out);
+  return out;
+}
+
+/** Se il testo cita un solo tempo in minuti ("cuoci per 15 minuti") lo usa come timer del passo. */
+function stepMinutes(text) {
+  const all = [...text.matchAll(/(\d+)\s*(?:-\s*\d+\s*)?minut/gi)];
+  return all.length === 1 ? Math.min(+all[0][1], 600) : 0;
+}
+
+function guessCategory(raw) {
+  const first = decodeHtml([].concat(raw || [])[0] || '');
+  const l = first.toLowerCase();
+  const map = [['antipast', 'Antipasti'], ['starter', 'Antipasti'], ['primo', 'Primi'], ['primi', 'Primi'], ['pasta', 'Primi'], ['secondo', 'Secondi'], ['secondi', 'Secondi'],
+    ['contorn', 'Contorni'], ['dolc', 'Dolci'], ['dessert', 'Dolci'], ['lievitat', 'Lievitati'], ['pane', 'Lievitati'], ['pizza', 'Lievitati'],
+    ['zupp', 'Zuppe'], ['minestr', 'Zuppe'], ['pesce', 'Pesce']];
+  return (map.find(([k]) => l.includes(k)) || [])[1] || first.slice(0, 30);
+}
+
+function findRecipeNode(doc) {
+  const nodes = [];
+  const walk = n => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) return n.forEach(walk);
+    nodes.push(n);
+    if (n['@graph']) walk(n['@graph']);
+  };
+  $$('script[type="application/ld+json"]', doc).forEach(s => { try { walk(JSON.parse(s.textContent.trim())); } catch { /* JSON non valido: salta */ } });
+  return nodes.find(n => [].concat(n['@type'] || []).some(t => /Recipe$/i.test(t)));
+}
+
+function recipeFromLd(n, url) {
+  const prep = isoMinutes(n.prepTime), cook = isoMinutes(n.cookTime), total = isoMinutes(n.totalTime);
+  const steps = flattenSteps(n.recipeInstructions).map(text => ({ text, minutes: stepMinutes(text) }));
+  const ingredients = [].concat(n.recipeIngredient || n.ingredients || []).map(parseIngredient).filter(i => i.name);
+  if (!ingredients.length && !steps.length) throw new Error('NO_RECIPE');
+  const yieldNum = String([].concat(n.recipeYield || []).join(' ')).match(/\d+/);
+  return {
+    title: decodeHtml(n.name || ''), category: guessCategory(n.recipeCategory),
+    servings: yieldNum ? +yieldNum[0] : 4,
+    prepMin: prep || (!cook ? total : 0) || '', cookMin: cook || '',
+    cookMethod: decodeHtml([].concat(n.cookingMethod || [])[0] || ''), difficulty: '',
+    ingredients: ingredients.length ? ingredients : [{}], steps: steps.length ? steps : [{}],
+    notes: 'Fonte: ' + url, photo: ''
+  };
+}
+
+async function importFromUrl(url) {
+  const ep = importEndpoint();
+  if (!ep) throw new Error('NO_ENDPOINT');
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  let res;
+  try { res = await fetch(`${ep}/?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(25000) }); }
+  catch { throw new Error('Servizio di importazione non raggiungibile. Controlla la connessione e l\'indirizzo del servizio.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.html) throw new Error(data.error || `Errore ${res.status}`);
+  const node = findRecipeNode(new DOMParser().parseFromString(data.html, 'text/html'));
+  if (!node) throw new Error('NO_RECIPE');
+  return recipeFromLd(node, data.finalUrl || url);
+}
+
+/** Bozza da testo libero: titolo sulla prima riga, poi sezioni "Ingredienti" e "Preparazione". */
+function recipeFromText(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const iIng = lines.findIndex(l => /^ingredienti\b/i.test(l));
+  const iPrep = lines.findIndex((l, k) => k > iIng && /^(preparazione|procedimento|istruzioni|metodo|come si prepara)\b/i.test(l));
+  if (iIng < 0 || iPrep < 0) throw new Error('Non trovo le sezioni "Ingredienti" e "Preparazione" nel testo.');
+  const clean = l => l.replace(/^[-•*▢☐▪◦]\s*/, '');
+  return {
+    title: iIng > 0 ? lines[0] : '', category: '', servings: 4, prepMin: '', cookMin: '', cookMethod: '', difficulty: '',
+    ingredients: lines.slice(iIng + 1, iPrep).map(clean).map(parseIngredient).filter(i => i.name),
+    steps: flattenSteps(lines.slice(iPrep + 1).join('\n')).map(text => ({ text, minutes: stepMinutes(text) })),
+    notes: '', photo: ''
+  };
+}
+
+function openImportRecipe() {
+  $('#im').innerHTML = `<div class="rv-body">
+    <button class="close" data-act="close" style="position:static;float:none;margin:0 0 -10px auto;display:block" aria-label="Chiudi">✕</button>
+    <h2>Importa una ricetta</h2>
+    <p class="hint">Incolla il link di una ricetta (GialloZafferano, Cucchiaio d'Argento, Benedetta…). Si aprirà già compilata: controllala e salvala.</p>
+    <form class="stack" id="imForm">
+      <input class="inp" id="imUrl" type="text" inputmode="url" placeholder="https://…" autocomplete="off" aria-label="Link della ricetta">
+      <button class="btn primary" id="imBtn">🔗 Importa</button>
+    </form>
+    <p class="hint" id="imMsg" role="status"></p>
+    <details><summary>Il sito non funziona? Incolla il testo della ricetta</summary>
+      <form class="stack" id="imTextForm" style="margin-top:10px">
+        <textarea class="inp" id="imText" rows="8" placeholder="Titolo&#10;Ingredienti&#10;200 g farina&#10;2 uova&#10;Preparazione&#10;Mescola…"></textarea>
+        <button class="btn">📝 Crea la bozza</button>
+      </form></details>
+    <details><summary>⚙️ Servizio di importazione</summary>
+      <form class="stack" id="imEpForm" style="margin-top:10px">
+        <input class="inp" id="imEp" placeholder="https://ricettario-import.NOME.workers.dev" value="${esc(importEndpoint())}" aria-label="Indirizzo del servizio">
+        <button class="btn sm">Salva indirizzo</button>
+      </form></details></div>`;
+  $('#im').showModal();
+  if (importEndpoint()) $('#imUrl').focus(); else $('#imMsg').textContent = 'Prima di iniziare imposta l\'indirizzo del servizio qui sotto (⚙️).';
+}
+
+async function doImportUrl() {
+  const url = $('#imUrl').value.trim(), msg = $('#imMsg'), btn = $('#imBtn');
+  if (!url) return;
+  btn.disabled = true; msg.textContent = 'Sto leggendo la pagina…';
+  try {
+    const draft = await importFromUrl(url);
+    $('#im').close();
+    openEditor(null, draft);
+  } catch (e) {
+    msg.textContent = e.message === 'NO_ENDPOINT' ? 'Imposta prima l\'indirizzo del servizio (⚙️ qui sotto).'
+      : e.message === 'NO_RECIPE' ? 'Non ho trovato i dati della ricetta in questa pagina. Prova a incollare il testo qui sotto.'
+      : e.message;
+    if (e.message === 'NO_RECIPE') $('#im details').open = true;
+  } finally { btn.disabled = false; }
+}
+
+/* =========================================================
    Installazione come app (PWA)
    ========================================================= */
 let installEvt = null;
@@ -701,6 +875,7 @@ document.addEventListener('click', async e => {
   switch (act) {
     case 'tab': ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); break;
     case 'new': openEditor(); break;
+    case 'import-recipe': openImportRecipe(); break;
     case 'open': openRecipe(id); break;
     case 'edit': openEditor(id); break;
     case 'close': dlg?.close(); break;
@@ -813,7 +988,17 @@ document.addEventListener('submit', e => {
   e.preventDefault();
   const f = e.target;
   if (f.id === 'edForm') saveRecipe(f);
-  else if (f.id === 'pkForm') {
+  else if (f.id === 'imForm') doImportUrl();
+  else if (f.id === 'imTextForm') {
+    try {
+      const draft = recipeFromText($('#imText').value);
+      $('#im').close(); openEditor(null, draft);
+    } catch (err) { $('#imMsg').textContent = err.message; }
+  } else if (f.id === 'imEpForm') {
+    const v = $('#imEp').value.trim();
+    try { v ? localStorage.setItem('ricettario.importUrl', v) : localStorage.removeItem('ricettario.importUrl'); } catch { /* ignora */ }
+    $('#imMsg').textContent = v ? 'Indirizzo salvato ✔' : 'Indirizzo rimosso.';
+  } else if (f.id === 'pkForm') {
     const text = $('#pkText').value.trim();
     if (text) planAdd({ text });
   } else if (f.id === 'addForm') {
