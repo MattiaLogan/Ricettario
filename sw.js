@@ -1,7 +1,7 @@
 /* Service worker: l'app funziona offline dopo la prima visita.
    Strategia: risposta dalla cache subito, aggiornamento in background.
    Quando modifichi i file, incrementa VERSION per forzare l'aggiornamento. */
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = 'ricettario-' + VERSION;
 const SHELL = [
   './', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',

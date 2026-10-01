@@ -648,7 +648,7 @@ $('#rv').addEventListener('close', () => { if (wake) { wake.release(); wake = nu
 /* =========================================================
    Importazione ricette da link
    ========================================================= */
-const IMPORT_ENDPOINT = ''; // es. 'https://ricettario-import.NOME.workers.dev'
+const IMPORT_ENDPOINT = 'https://ricettario-import.mattia-subscriber.workers.dev';
 const importEndpoint = () => (localStorage.getItem('ricettario.importUrl') || IMPORT_ENDPOINT).trim().replace(/\/+$/, '');
 
 const FRACTIONS = { '½': .5, '¼': .25, '¾': .75, '⅓': 1 / 3, '⅔': 2 / 3, '⅛': .125 };
@@ -681,7 +681,13 @@ function parseIngredient(line) {
   if ((m = s.match(/^(\d+)\s+(\d+)\/(\d+)\s*(.*)$/))) { qty = +m[1] + m[2] / m[3]; rest = m[4]; }
   else if ((m = s.match(/^(\d+)\/(\d+)\s*(.*)$/))) { qty = m[1] / m[2]; rest = m[3]; }
   else if ((m = s.match(/^(\d+(?:[.,]\d+)?)\s*(.*)$/))) { qty = parseFloat(m[1].replace(',', '.')); rest = m[2]; }
-  else return whole;
+  else {
+    // quantità in fondo, come su GialloZafferano: "Spaghetti 320 g", "Tuorli (di uova medie) 6"
+    m = s.match(/^(.+?)\s+(\d+(?:[.,]\d+)?)\s*([A-Za-zàèéìòù]+)?\.?$/);
+    const n = m && parseFloat(m[2].replace(',', '.'));
+    const unit = m && m[3] ? UNIT_MAP[m[3].toLowerCase()] : '';
+    return n > 0 && (!m[3] || unit) ? { qty: fmtQty(n), unit: unit || '', name: m[1] } : whole;
+  }
   if (/^[-–]\s*\d/.test(rest) || !rest) return whole;       // intervalli ("2-3 uova") o solo numero
 
   let unit = '';
@@ -691,11 +697,19 @@ function parseIngredient(line) {
   return rest ? { qty: fmtQty(qty), unit, name: rest } : whole;
 }
 
+/** Alcuni siti lasciano nel testo i numeri che rimandano alle foto ("antiaderente 4 e rosolate", "cottura 10 ;"): li toglie. */
+function stripPhotoRefs(t) {
+  return t
+    .replace(/([\wà-ù])\s+\d{1,2}(?:\s+\d{1,2})*\s*([.,;:])(?!\d)/gi, '$1$2')
+    .replace(/([a-zà-ù])\s+\d{1,2}(?=\s+(?:e|ed)\s+(?!\d|mezz))/gi, '$1')
+    .replace(/\s{2,}/g, ' ').trim();
+}
+
 function flattenSteps(x, out = []) {
   if (!x) return out;
   if (typeof x === 'string') {
     x.replace(/<\/(?:p|li|div)>|<br\s*\/?>/gi, '\n').split(/\n+/).forEach(t => {
-      t = decodeHtml(t).replace(/^\s*(?:passo|step)?\s*\d+\s*[.):\-]\s*/i, '');
+      t = stripPhotoRefs(decodeHtml(t)).replace(/^\s*(?:passo|step)?\s*\d+\s*[.):\-]\s*/i, '');
       if (t) out.push(t);
     });
   } else if (Array.isArray(x)) x.forEach(i => flattenSteps(i, out));
