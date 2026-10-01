@@ -84,9 +84,9 @@ function seed() {
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY));
-    if (s && Array.isArray(s.recipes)) return { shopping: [], timers: [], ...s };
+    if (s && Array.isArray(s.recipes)) return { shopping: [], timers: [], plan: {}, ...s };
   } catch { /* primo avvio o dati corrotti */ }
-  return { recipes: seed(), shopping: [], timers: [] };
+  return { recipes: seed(), shopping: [], timers: [], plan: {} };
 }
 let state = load();
 
@@ -95,7 +95,7 @@ function save() {
   catch { toast('Spazio pieno: impossibile salvare. Prova con foto più piccole.'); return false; }
 }
 
-const ui = { tab: 'ricette', q: '', cat: '', favOnly: false, viewId: null, servings: 0, checked: new Set(), edit: null, photo: '' };
+const ui = { tab: 'ricette', week: null, pick: null, q: '', cat: '', favOnly: false, viewId: null, servings: 0, checked: new Set(), edit: null, photo: '' };
 const recipeById = id => state.recipes.find(r => r.id === id);
 
 /* =========================================================
@@ -117,7 +117,7 @@ function render() {
   const b = $('#badge'); b.textContent = open; b.hidden = !open;
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === ui.tab));
   $('#fab').hidden = ui.tab !== 'ricette';
-  ui.tab === 'ricette' ? renderRecipes() : renderShopping();
+  ({ ricette: renderRecipes, piano: renderPlan, spesa: renderShopping })[ui.tab]();
   renderTimers();
 }
 
@@ -365,6 +365,105 @@ function resizePhoto(file) {
 }
 
 /* =========================================================
+   Piano settimanale
+   ========================================================= */
+const SLOTS = [['p', '☀️ Pranzo'], ['c', '🌙 Cena']];
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const mondayOf = d => addDays(new Date(d.getFullYear(), d.getMonth(), d.getDate()), -((d.getDay() + 6) % 7));
+const dayName = (d, opt) => d.toLocaleDateString('it-IT', opt);
+ui.week = mondayOf(new Date());
+
+function renderPlan() {
+  const todayS = ymd(new Date()), end = addDays(ui.week, 6);
+  const range = `${dayName(ui.week, { day: 'numeric', month: 'short' })} – ${dayName(end, { day: 'numeric', month: 'short' })}`;
+  const isThisWeek = ymd(ui.week) === ymd(mondayOf(new Date()));
+  let planned = 0;
+
+  const days = Array.from({ length: 7 }, (_, k) => {
+    const d = addDays(ui.week, k), key = ymd(d), day = state.plan[key] || {};
+    const slots = SLOTS.map(([s, label]) => {
+      const entries = day[s] || [];
+      planned += entries.filter(e => e.rid && recipeById(e.rid)).length;
+      return `<div class="slot"><div class="slot-h"><span>${label}</span>
+          <button class="add" data-act="plan-add" data-date="${key}" data-slot="${s}" aria-label="Aggiungi a ${label}">＋</button></div>
+        ${entries.map(e => {
+          const r = e.rid && recipeById(e.rid);
+          return `<div class="meal ${e.rid && !r ? 'gone' : ''}">
+            ${r ? `<button class="mt" data-act="open" data-id="${r.id}">${emojiFor(r.category)} ${esc(r.title)}</button>`
+               : `<span class="mt">${e.rid ? 'Ricetta eliminata' : '✎ ' + esc(e.text)}</span>`}
+            <button class="x" data-act="plan-del" data-date="${key}" data-slot="${s}" data-id="${e.id}" aria-label="Rimuovi">✕</button></div>`;
+        }).join('')}</div>`;
+    }).join('');
+    return `<section class="day ${key === todayS ? 'today' : ''} ${key < todayS ? 'past' : ''}">
+      <h3>${esc(dayName(d, { weekday: 'long' }))} <small>${d.getDate()} ${esc(dayName(d, { month: 'short' }))}</small>${key === todayS ? '<em>Oggi</em>' : ''}</h3>${slots}</section>`;
+  }).join('');
+
+  $('#view').innerHTML = `
+    <div class="week-nav">
+      <button class="btn sm" data-act="week" data-d="-1" aria-label="Settimana precedente">‹</button>
+      <div class="wl"><b>${range}</b>${isThisWeek ? '<small>Questa settimana</small>' : ''}</div>
+      <button class="btn sm" data-act="week" data-d="1" aria-label="Settimana successiva">›</button>
+      ${isThisWeek ? '' : '<button class="btn sm" data-act="week" data-d="0">Oggi</button>'}
+    </div>
+    <div class="days">${days}</div>
+    <div class="shop-actions" style="margin-top:18px">
+      <button class="btn green" data-act="plan-shop" ${planned ? '' : 'disabled'}>🛒 Aggiungi alla spesa gli ingredienti della settimana</button>
+      <button class="btn sm danger" data-act="plan-clear" ${Object.keys(state.plan).some(k => k >= ymd(ui.week) && k <= ymd(end)) ? '' : 'disabled'}>Svuota settimana</button>
+    </div>
+    <p class="hint">Per ogni ricetta si usano le porzioni indicate nella ricetta. Vengono aggiunti solo i giorni da oggi in poi, e le quantità uguali si sommano.</p>`;
+}
+
+function openPicker(date, slot) {
+  ui.pick = { date, slot };
+  const d = new Date(date + 'T12:00:00');
+  const label = SLOTS.find(s => s[0] === slot)[1];
+  $('#pk').innerHTML = `<div class="rv-body">
+    <button class="close" data-act="close" style="position:static;float:none;margin:0 0 -10px auto;display:block" aria-label="Chiudi">✕</button>
+    <div><h2>Cosa si mangia?</h2><p class="hint" style="margin-top:4px">${esc(dayName(d, { weekday: 'long', day: 'numeric', month: 'long' }))} · ${label}</p></div>
+    <input id="pkSearch" type="search" placeholder="Cerca nel ricettario…" autocomplete="off"
+      style="padding:12px 16px;border-radius:14px;border:1px solid var(--line);background:var(--card);color:var(--ink);width:100%">
+    <div class="stack" id="pkList"></div>
+    <hr>
+    <form class="add-form" id="pkForm"><input id="pkText" placeholder="Oppure scrivi: es. Pizza fuori, Avanzi…" autocomplete="off"><button class="btn">Aggiungi</button></form></div>`;
+  renderPickList('');
+  $('#pk').showModal();
+}
+
+function renderPickList(q) {
+  q = q.trim().toLowerCase();
+  const list = state.recipes.filter(r => !q || [r.title, r.category].join(' ').toLowerCase().includes(q))
+    .sort((a, b) => a.title.localeCompare(b.title, 'it'));
+  $('#pkList').innerHTML = list.length
+    ? list.map(r => `<button class="btn pick" data-act="pick" data-id="${r.id}"><span>${emojiFor(r.category)} ${esc(r.title)}</span><small>${esc(r.category || '')}</small></button>`).join('')
+    : '<p class="hint">Nessuna ricetta trovata: puoi scrivere un pasto libero qui sotto.</p>';
+}
+
+function planAdd(entry) {
+  const { date, slot } = ui.pick;
+  const day = state.plan[date] = state.plan[date] || {};
+  (day[slot] = day[slot] || []).push({ id: uid(), ...entry });
+  save(); $('#pk').close(); render();
+}
+
+function planToShopping() {
+  const todayS = ymd(new Date());
+  let n = 0;
+  for (let k = 0; k < 7; k++) {
+    const day = state.plan[ymd(addDays(ui.week, k))];
+    if (!day || ymd(addDays(ui.week, k)) < todayS) continue;
+    SLOTS.forEach(([s]) => (day[s] || []).forEach(e => {
+      const r = e.rid && recipeById(e.rid); if (!r) return;
+      r.ingredients.forEach(i => addShopItem({ name: i.name, qty: parseQty(i.qty), unit: i.unit, from: 'Piano settimanale' }));
+      n++;
+    }));
+  }
+  if (!n) return toast('Nessun pasto da oggi in poi in questa settimana');
+  save(); render();
+  toast(`Ingredienti di ${n} ${n === 1 ? 'pasto aggiunto' : 'pasti aggiunti'} alla spesa 🛒`);
+}
+
+/* =========================================================
    Lista della spesa
    ========================================================= */
 function renderShopping() {
@@ -584,7 +683,7 @@ function openBackup() {
 }
 
 function exportData() {
-  const blob = new Blob([JSON.stringify({ recipes: state.recipes, shopping: state.shopping }, null, 1)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ recipes: state.recipes, shopping: state.shopping, plan: state.plan }, null, 1)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `ricettario-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -615,7 +714,9 @@ document.addEventListener('click', async e => {
     case 'del': {
       const r = recipeById(id);
       if (confirm(`Eliminare “${r.title}”?`)) {
-        state.recipes = state.recipes.filter(x => x.id !== id); save();
+        state.recipes = state.recipes.filter(x => x.id !== id);
+        Object.values(state.plan).forEach(day => SLOTS.forEach(([s]) => { if (day[s]) day[s] = day[s].filter(e => e.rid !== id); }));
+        save();
         $('#rv').close(); render(); toast('Ricetta eliminata');
       }
       break;
@@ -636,6 +737,25 @@ document.addEventListener('click', async e => {
     case 'add-step': { $('#stepRows').insertAdjacentHTML('beforeend', stepRow()); $('#stepRows .row:last-child .t').focus(); break; }
     case 'rm-row': el.closest('.row').remove(); break;
     case 'photo-rm': ui.photo = ''; $('#photoPrev').hidden = true; el.hidden = true; break;
+
+    /* piano settimanale */
+    case 'week': ui.week = el.dataset.d === '0' ? mondayOf(new Date()) : addDays(ui.week, 7 * +el.dataset.d); renderPlan(); break;
+    case 'plan-add': openPicker(el.dataset.date, el.dataset.slot); break;
+    case 'pick': planAdd({ rid: id }); break;
+    case 'plan-del': {
+      const day = state.plan[el.dataset.date];
+      day[el.dataset.slot] = day[el.dataset.slot].filter(e => e.id !== id);
+      if (SLOTS.every(([s]) => !(day[s] || []).length)) delete state.plan[el.dataset.date];
+      save(); renderPlan();
+      break;
+    }
+    case 'plan-shop': planToShopping(); break;
+    case 'plan-clear':
+      if (confirm('Svuotare il piano di questa settimana?')) {
+        for (let k = 0; k < 7; k++) delete state.plan[ymd(addDays(ui.week, k))];
+        save(); renderPlan();
+      }
+      break;
 
     /* spesa */
     case 'shop-del': state.shopping = state.shopping.filter(i => i.id !== id); save(); render(); break;
@@ -661,6 +781,7 @@ $$('dialog').forEach(d => d.addEventListener('click', e => { if (e.target === d)
 
 document.addEventListener('input', e => {
   if (e.target.id === 'search') { ui.q = e.target.value; renderGrid(); }
+  else if (e.target.id === 'pkSearch') renderPickList(e.target.value);
 });
 
 document.addEventListener('change', async e => {
@@ -680,6 +801,7 @@ document.addEventListener('change', async e => {
       if (!Array.isArray(data.recipes)) throw 0;
       if (confirm(`Sostituire i dati attuali con il backup (${data.recipes.length} ricette)?`)) {
         state.recipes = data.recipes; state.shopping = Array.isArray(data.shopping) ? data.shopping : [];
+        state.plan = data.plan && typeof data.plan === 'object' ? data.plan : {};
         save(); $('#bk').close(); render(); toast('Backup ripristinato ✔');
       }
     } catch { toast('File di backup non valido'); }
@@ -691,7 +813,10 @@ document.addEventListener('submit', e => {
   e.preventDefault();
   const f = e.target;
   if (f.id === 'edForm') saveRecipe(f);
-  else if (f.id === 'addForm') {
+  else if (f.id === 'pkForm') {
+    const text = $('#pkText').value.trim();
+    if (text) planAdd({ text });
+  } else if (f.id === 'addForm') {
     const inp = $('#addInput'); if (!inp.value.trim()) return;
     addShopItem(parseShopInput(inp.value)); save(); render(); $('#addInput').focus();
   } else if (f.id === 'importForm') {
