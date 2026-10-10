@@ -334,3 +334,11 @@ details[open] summary { color: var(--ink); }
 /* ---------- Codice famiglia ---------- */
 .code { font: 700 1.15rem ui-monospace, "SFMono-Regular", Menlo, monospace; letter-spacing: .06em; text-align: center; background: var(--bg);
   border: 1px dashed var(--line); border-radius: 12px; padding: 12px 8px; user-select: all; -webkit-user-select: all; overflow-wrap: anywhere; }
+
+/* ---------- Lista per reparto ---------- */
+.aisle { margin-top: 18px; }
+.aisle h3 { font-size: 1.05rem; display: flex; align-items: baseline; gap: 8px; margin: 0 4px 8px; }
+.aisle h3 small { color: var(--muted); font: 600 .8rem var(--sans); background: var(--card); border: 1px solid var(--line); border-radius: 99px; padding: 1px 9px; }
+.aisle.in-cart { opacity: .75; }
+.shop-actions .btn.sm.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.list .x[data-act="shop-aisle"] { width: 36px; font-size: 1.05rem; }

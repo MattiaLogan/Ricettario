@@ -477,26 +477,106 @@ function planToShopping() {
 /* =========================================================
    Lista della spesa
    ========================================================= */
+/* ---------- Reparti del supermercato ---------- */
+// Ordine = percorso tipico nel supermercato. `w`: parole esatte; con * finale basta l'inizio ("mandarin*"); `p`: frasi (hanno la precedenza).
+const AISLES = [
+  { id: 'frutta', label: 'Frutta e verdura', icon: '🥬', w: ['mela', 'mele', 'pera', 'pere', 'banana', 'banane', 'arancia', 'arance', 'limone', 'limoni', 'mandarin*', 'clementin*', 'fragol*', 'uva', 'kiwi', 'ananas', 'pesca', 'pesche', 'albicocc*', 'ciliegi*', 'melone', 'anguria', 'cocomero', 'avocado', 'lime', 'pompelmo', 'mirtill*', 'lampon*', 'insalata', 'lattuga', 'rucola', 'spinaci', 'valeriana', 'radicchio', 'pomodor*', 'cipolla', 'cipolle', 'cipollotto', 'cipollotti', 'scalogno', 'aglio', 'patata', 'patate', 'carota', 'carote', 'zucchina', 'zucchine', 'melanzan*', 'peperon*', 'funghi', 'fungo', 'champignon', 'sedano', 'finocch*', 'cavol*', 'broccol*', 'verza', 'zucca', 'porro', 'porri', 'asparag*', 'carciof*', 'fagiolini', 'basilico', 'prezzemolo', 'rosmarino', 'salvia', 'menta', 'timo', 'bietol*', 'cetriol*', 'ravanell*', 'barbabietol*', 'zenzero', 'rapa', 'rape', 'friarielli', 'cicoria', 'indivia', 'songino', 'erbette', 'verdura', 'verdure', 'frutta', 'tuberi'] },
+  { id: 'pane', label: 'Pane e forno', icon: '🥖', w: ['pane', 'panini', 'panino', 'focaccia', 'grissini', 'cracker', 'crackers', 'piadina', 'piadine', 'pizza', 'tortilla', 'tortillas', 'wrap', 'pancarr*', 'baguette', 'ciabatta', 'rosette', 'michette'] },
+  { id: 'carne', label: 'Carne e salumi', icon: '🥩', w: ['pollo', 'tacchino', 'manzo', 'vitello', 'maiale', 'suino', 'agnello', 'salsiccia', 'salsicce', 'hamburger', 'macinato', 'bistecca', 'bistecche', 'fettina', 'fettine', 'arrosto', 'coniglio', 'prosciutto', 'salame', 'mortadella', 'speck', 'bresaola', 'pancetta', 'guanciale', 'wurstel', 'cotoletta', 'cotolette', 'spezzatino', 'costine', 'coscia', 'cosce', 'fesa', 'nduja', 'cotechino', 'porchetta', 'carne', 'salumi', 'affettato', 'tritato'] },
+  { id: 'pesce', label: 'Pesce', icon: '🐟', w: ['pesce', 'salmone', 'merluzzo', 'baccala', 'branzino', 'orata', 'spigola', 'gamber*', 'scamp*', 'calamar*', 'polpo', 'cozze', 'vongol*', 'seppia', 'seppie', 'sogliola', 'platessa', 'trota', 'acciugh*', 'alici', 'sarde', 'sardine', 'mazzancolle', 'totani', 'moscardini', 'crostacei'] },
+  { id: 'latte', label: 'Latticini e uova', icon: '🧀', w: ['latte', 'panna', 'burro', 'yogurt', 'formaggio', 'formaggi', 'mozzarella', 'mozzarelle', 'parmigiano', 'grana', 'pecorino', 'ricotta', 'mascarpone', 'gorgonzola', 'provola', 'scamorza', 'fontina', 'taleggio', 'stracchino', 'philadelphia', 'emmental', 'asiago', 'burrata', 'feta', 'uova', 'uovo', 'tuorli', 'tuorlo', 'albumi', 'albume', 'kefir', 'besciamella', 'fiocchi'] },
+  { id: 'pasta', label: 'Pasta, riso e farine', icon: '🍝', w: ['pasta', 'spaghetti', 'penne', 'fusilli', 'rigatoni', 'tagliatelle', 'lasagne', 'farfalle', 'orecchiette', 'tortellini', 'ravioli', 'gnocchi', 'riso', 'couscous', 'farro', 'orzo', 'quinoa', 'farina', 'semola', 'polenta', 'pangrattato', 'amido', 'maizena', 'bucatini', 'linguine', 'paccheri', 'mezze', 'tagliolini', 'cereali'] },
+  { id: 'conserve', label: 'Conserve e legumi', icon: '🥫', w: ['passata', 'pelati', 'polpa', 'concentrato', 'tonno', 'scatola', 'lenticchie', 'ceci', 'fagioli', 'legumi', 'piselli', 'mais', 'olive', 'capperi', 'carciofini', 'cetriolini', 'sottaceti', 'sottolio', 'salsa', 'pesto', 'ragu', 'sugo', 'conserva', 'conserve', 'scatolette'] },
+  { id: 'condimenti', label: 'Olio, spezie e condimenti', icon: '🧂', w: ['olio', 'aceto', 'sale', 'pepe', 'peperoncino', 'spezie', 'origano', 'paprika', 'curry', 'curcuma', 'cannella', 'noce', 'zafferano', 'dado', 'brodo', 'maionese', 'ketchup', 'senape', 'tahini', 'rosmarino secco', 'chiodi', 'cumino', 'coriandolo', 'aromi', 'bicarbonato'] },
+  { id: 'dolci', label: 'Colazione, dolci e snack', icon: '🍪', w: ['zucchero', 'cacao', 'cioccolato', 'cioccolata', 'nutella', 'marmellata', 'confettura', 'miele', 'biscotti', 'biscotto', 'muesli', 'merendine', 'brioche', 'croissant', 'cornetto', 'cornetti', 'lievito', 'vanillina', 'vaniglia', 'savoiardi', 'amaretti', 'mandorle', 'noci', 'nocciole', 'pistacchi', 'pinoli', 'uvetta', 'caffe', 'te', 'the', 'tisana', 'camomilla', 'budino', 'wafer', 'patatine', 'snack', 'gelatina', 'colla', 'canditi', 'granella', 'fette'] },
+  { id: 'surgelati', label: 'Surgelati', icon: '🧊', w: ['surgelat*', 'congelat*', 'gelato', 'gelati', 'ghiaccio', 'bastoncini'] },
+  { id: 'bevande', label: 'Bevande', icon: '🥤', w: ['acqua', 'vino', 'birra', 'succo', 'succhi', 'aranciata', 'coca', 'cola', 'bibita', 'bibite', 'spumante', 'prosecco', 'liquore', 'grappa', 'amaro', 'limonata', 'gassosa', 'sciroppo', 'soda', 'tonica', 'chinotto', 'energy', 'frizzante', 'rum', 'vodka', 'gin', 'whisky'] },
+  { id: 'casa', label: 'Casa e igiene', icon: '🧴', w: ['detersivo', 'detersivi', 'sapone', 'shampoo', 'bagnoschiuma', 'dentifricio', 'spazzolino', 'ammorbidente', 'pellicola', 'alluminio', 'sacchetti', 'sacchi', 'spugna', 'spugne', 'candeggina', 'sgrassatore', 'lavastoviglie', 'pastiglie', 'tovaglioli', 'pannolini', 'assorbenti', 'deodorante', 'rasoio', 'cotone', 'fazzoletti', 'lampadine', 'pile', 'batterie', 'detergente', 'scottex', 'igienica', 'panni', 'straccio', 'carta'] },
+  { id: 'altro', label: 'Altro', icon: '🛒', w: [] },
+];
+const AISLE_PHRASES = [
+  ['surgelati', ['surgelat', 'congelat']],
+  ['condimenti', ['peperoncino', 'noce moscata']],
+  ['conserve', ['tonno in scatola', 'tonno sott', 'latte di cocco', 'burro di arachidi', 'burro di noccio', 'passata di', 'polpa di pomodoro', 'concentrato di pomodoro', 'pomodori pelati', 'pomodori in scatola', 'legumi in scatola', 'piselli in scatola']],
+  ['surgelati', ['pizza surgelata', 'verdure surgelate', 'spinaci surgelati', 'piselli surgelati', 'patatine surgelate', 'minestrone surgelato', 'pesce surgelato']],
+  ['pesce', ['tonno fresco', 'pesce spada', 'frutti di mare', 'filetto di merluzzo', 'filetti di merluzzo']],
+  ['bevande', ['latte di soia', 'latte di mandorla', 'latte di riso', 'latte di avena', 'latte vegetale', 'te freddo', 'the freddo', 'acqua tonica']],
+  ['dolci', ['latte condensato', 'zucchero a velo', 'gocce di cioccolato', 'fette biscottate']],
+  ['condimenti', ['noce moscata', 'rosmarino secco', 'salvia secca', 'basilico secco', 'sale grosso', 'sale fino', 'chiodi di garofano', 'olio di semi', 'olio di oliva']],
+  ['carne', ['petto di pollo', 'carne macinata']],
+  ['casa', ['carta igienica', 'carta da cucina', 'carta forno', 'carta stagnola', 'sacchetti per', 'piatti di carta', 'bicchieri di carta']],
+];
+const AISLE_BY_ID = Object.fromEntries(AISLES.map(a => [a.id, a]));
+const normName = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+/** Indovina il reparto dal nome: prima le frasi, poi la prima parola riconosciuta da sinistra. */
+function guessAisle(name) {
+  const n = normName(name);
+  for (const [id, phrases] of AISLE_PHRASES) if (phrases.some(p => n.includes(p))) return id;
+  for (const t of n.split(/[ ']/)) {
+    for (const a of AISLES) {
+      if (a.w.some(w => w.endsWith('*') ? t.startsWith(w.slice(0, -1)) : t === w)) return a.id;
+    }
+  }
+  return 'altro';
+}
+/** Reparto scelto a mano, oppure ricordato da una scelta precedente, oppure indovinato. */
+const aisleOf = i => (AISLE_BY_ID[i.aisle] && i.aisle) || (state.aisleMap || {})[normName(i.name)] || guessAisle(i.name);
+const shopGrouped = () => { try { return localStorage.getItem('ricettario.groupShop') !== '0'; } catch { return true; } };
+
+const shopRow = (i, mover) => `
+  <li class="${i.done ? 'done' : ''}"><label>
+    <input type="checkbox" data-chk="shop" data-id="${i.id}" ${i.done ? 'checked' : ''}>
+    <span class="t">${itemLabel(i)}</span>${i.from ? `<span class="from">${esc(i.from)}</span>` : ''}</label>
+    ${mover ? `<button class="x" data-act="shop-aisle" data-id="${i.id}" aria-label="Cambia reparto" title="Cambia reparto">↪</button>` : ''}
+    <button class="x" data-act="shop-del" data-id="${i.id}" aria-label="Elimina">✕</button></li>`;
+
+/** Prodotti da comprare divisi per reparto (nell'ordine del supermercato), poi quelli già nel carrello. */
+function shopSections() {
+  const byName = (a, b) => a.name.localeCompare(b.name, 'it');
+  const open = state.shopping.filter(i => !i.done), done = state.shopping.filter(i => i.done);
+  const sections = AISLES.map(a => ({ a, items: open.filter(i => aisleOf(i) === a.id).sort(byName) })).filter(s => s.items.length);
+  return { sections, done: done.sort(byName) };
+}
+
 function renderShopping() {
-  const items = [...state.shopping].sort((a, b) => a.done - b.done);
+  const items = state.shopping, grouped = shopGrouped();
+  let list = '';
+  if (!items.length) {
+    list = `<div class="empty"><div class="big">🛒</div><h3>La lista è vuota</h3>
+      <p>Aggiungi prodotti qui sopra oppure, da una ricetta, tocca “Aggiungi alla lista della spesa”.</p></div>`;
+  } else if (grouped) {
+    const { sections, done } = shopSections();
+    list = sections.map(({ a, items }) => `<section class="aisle"><h3><span>${a.icon}</span> ${esc(a.label)} <small>${items.length}</small></h3>
+        <ul class="list">${items.map(i => shopRow(i, true)).join('')}</ul></section>`).join('')
+      + (done.length ? `<section class="aisle in-cart"><h3><span>✔</span> Nel carrello <small>${done.length}</small></h3>
+        <ul class="list">${done.map(i => shopRow(i, false)).join('')}</ul></section>` : '');
+  } else {
+    list = `<ul class="list">${[...items].sort((a, b) => a.done - b.done).map(i => shopRow(i, false)).join('')}</ul>`;
+  }
   $('#view').innerHTML = `
     <form class="add-form" id="addForm">
       <input id="addInput" placeholder="Aggiungi… (es. 2 kg patate, latte)" autocomplete="off" aria-label="Nuovo prodotto">
       <button class="btn primary">Aggiungi</button>
     </form>
     <div class="shop-actions">
+      <button class="btn sm ${grouped ? 'on' : ''}" data-act="shop-group" aria-pressed="${grouped}">🗂 Per reparto</button>
       <button class="btn sm" data-act="share" ${items.length ? '' : 'disabled'}>📤 Condividi</button>
       <button class="btn sm" data-act="import">📥 Importa</button>
       <button class="btn sm" data-act="clear-done" ${items.some(i => i.done) ? '' : 'disabled'}>✔ Rimuovi spuntati</button>
       <button class="btn sm danger" data-act="clear-all" ${items.length ? '' : 'disabled'}>Svuota</button>
     </div>
-    ${items.length ? `<ul class="list">${items.map(i => `
-      <li class="${i.done ? 'done' : ''}"><label>
-        <input type="checkbox" data-chk="shop" data-id="${i.id}" ${i.done ? 'checked' : ''}>
-        <span class="t">${itemLabel(i)}</span>${i.from ? `<span class="from">${esc(i.from)}</span>` : ''}</label>
-        <button class="x" data-act="shop-del" data-id="${i.id}" aria-label="Elimina">✕</button></li>`).join('')}</ul>` :
-    `<div class="empty"><div class="big">🛒</div><h3>La lista è vuota</h3>
-      <p>Aggiungi prodotti qui sopra oppure, da una ricetta, tocca “Aggiungi alla lista della spesa”.</p></div>`}`;
+    ${list}`;
+}
+
+function openAislePicker(id) {
+  const it = state.shopping.find(i => i.id === id); if (!it) return;
+  const cur = aisleOf(it);
+  $('#pk').innerHTML = `<div class="rv-body">
+    <button class="close" data-act="close" style="position:static;float:none;margin:0 0 -10px auto;display:block" aria-label="Chiudi">✕</button>
+    <div><h2>In che reparto?</h2><p class="hint" style="margin-top:4px">“${esc(it.name)}” — la scelta viene ricordata per la prossima volta.</p></div>
+    <div class="stack">${AISLES.map(a => `<button class="btn pick ${a.id === cur ? 'primary' : ''}" data-act="aisle-pick" data-id="${id}" data-aisle="${a.id}"><span>${a.icon} ${esc(a.label)}</span></button>`).join('')}</div></div>`;
+  $('#pk').showModal();
 }
 
 const itemLabel = i => {
@@ -514,7 +594,7 @@ function addShopItem({ name, qty = null, unit = '', from = '' }) {
     else if (same.qty == null && qty != null) same.qty = qty;
     return;
   }
-  state.shopping.push({ id: uid(), name, qty, unit, done: false, from });
+  state.shopping.push({ id: uid(), name, qty, unit, done: false, from, ...((state.aisleMap || {})[normName(name)] ? { aisle: state.aisleMap[normName(name)] } : {}) });
 }
 
 /** Interpreta "2 kg patate", "3 uova", "latte". */
@@ -529,8 +609,9 @@ function parseShopInput(text) {
 }
 
 function shopText() {
-  const open = state.shopping.filter(i => !i.done);
-  return '🛒 Lista della spesa\n' + open.map(i => '☐ ' + [fmtQty(i.qty), i.unit, i.name].filter(Boolean).join(' ')).join('\n');
+  const line = i => '☐ ' + [fmtQty(i.qty), i.unit, i.name].filter(Boolean).join(' ');
+  if (!shopGrouped()) return '🛒 Lista della spesa\n' + state.shopping.filter(i => !i.done).map(line).join('\n');
+  return '🛒 Lista della spesa\n' + shopSections().sections.map(({ a, items }) => `\n${a.icon} ${a.label}\n` + items.map(line).join('\n')).join('\n');
 }
 
 const b64 = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -1226,6 +1307,21 @@ document.addEventListener('click', async e => {
       break;
 
     /* spesa */
+    case 'shop-group': {
+      try { localStorage.setItem('ricettario.groupShop', shopGrouped() ? '0' : '1'); } catch { /* ignora */ }
+      renderShopping();
+      break;
+    }
+    case 'shop-aisle': openAislePicker(id); break;
+    case 'aisle-pick': {
+      const it = state.shopping.find(i => i.id === id), aisle = el.dataset.aisle;
+      if (it) {
+        it.aisle = aisle;
+        (state.aisleMap = state.aisleMap || {})[normName(it.name)] = aisle;
+        save(); $('#pk').close(); render();
+      }
+      break;
+    }
     case 'shop-del': state.shopping = state.shopping.filter(i => i.id !== id); save(); render(); break;
     case 'clear-done': state.shopping = state.shopping.filter(i => !i.done); save(); render(); break;
     case 'clear-all': if (confirm('Svuotare tutta la lista della spesa?')) { state.shopping = []; save(); render(); } break;
