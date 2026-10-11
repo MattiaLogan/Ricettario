@@ -1,7 +1,7 @@
 'use strict';
 
 /** Deve coincidere con VERSION in sw.js: serve a capire se l'app in uso è quella più recente. */
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 
 /* =========================================================
    Utilità
@@ -1655,7 +1655,7 @@ document.addEventListener('click', async e => {
 });
 
 /* chiusura dialog con click sullo sfondo */
-$$('dialog:not(.cook)').forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close(); }));
+$$('dialog:not(.cooking)').forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close(); }));
 
 document.addEventListener('input', e => {
   if (e.target.id === 'search') { ui.q = e.target.value; renderGrid(); }

@@ -352,8 +352,8 @@ details[open] summary { color: var(--ink); }
 
 /* ---------- Modalità cucina ---------- */
 .cook-btn { margin-top: 2px; padding: 14px 18px; font-size: 1.05rem; }
-dialog.sheet.cook { width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border-radius: 0; overflow: hidden; box-shadow: none; }
-dialog.sheet.cook[open] { display: flex; flex-direction: column; align-items: stretch; }
+dialog.sheet.cooking { width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border-radius: 0; overflow: hidden; box-shadow: none; }
+dialog.sheet.cooking[open] { display: flex; flex-direction: column; align-items: stretch; }
 .ck-top { display: flex; align-items: center; gap: 4px; padding: calc(8px + env(safe-area-inset-top)) 10px 8px; }
 .ck-top .icon-btn { flex: none; background: var(--card); border: 1px solid var(--line); }
 .ck-top .icon-btn:disabled { opacity: .35; }
