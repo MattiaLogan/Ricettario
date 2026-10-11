@@ -14,7 +14,7 @@ Nessun server: i dati restano nel browser di chi la usa (usa "App e backup" ⚙�
 4. Dopo circa un minuto l'app è su `https://TUO-UTENTE.github.io/ricettario/`.
 
 ## Aggiornare l'app
-Dopo ogni modifica incrementa `VERSION` in `sw.js` (così i telefoni scaricano la nuova versione), poi:
+Dopo ogni modifica incrementa `VERSION` in `sw.js` **e** `APP_VERSION` in `app.js` (devono avere lo stesso valore: servono ai telefoni per riconoscere la versione nuova), poi:
 ```
 git add -A && git commit -m "Aggiornamento" && git push
 ```

@@ -1,15 +1,26 @@
 /* Service worker: l'app funziona offline dopo la prima visita.
-   Strategia: risposta dalla cache subito, aggiornamento in background.
-   Quando modifichi i file, incrementa VERSION per forzare l'aggiornamento. */
-const VERSION = 'v8';
+   Strategia: si prova prima la rete (così le versioni nuove arrivano al primo avvio, saltando anche la
+   cache HTTP di GitHub Pages) e, se è assente o lenta, si usa la copia salvata.
+   Quando modifichi i file, incrementa VERSION qui sotto E APP_VERSION in app.js (devono coincidere). */
+const VERSION = 'v9';
 const CACHE = 'ricettario-' + VERSION;
+const NET_TIMEOUT_MS = 3000;
 const SHELL = [
   './', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png'
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    // cache: 'reload' = scarica davvero dal server, senza passare dalla cache HTTP del browser
+    await Promise.all(SHELL.map(async url => {
+      const res = await fetch(new Request(url, { cache: 'reload' }));
+      if (!res.ok) throw new Error(url + ' → ' + res.status);
+      await cache.put(url, res);
+    }));
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', e => {
@@ -23,17 +34,40 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  e.respondWith(networkFirst(req));
+});
 
-  e.respondWith(
-    caches.open(CACHE).then(async cache => {
-      const cached = await cache.match(req, { ignoreSearch: true });
-      const fresh = fetch(req).then(res => {
-        if (res.ok) cache.put(req, res.clone());
-        return res;
-      }).catch(() => null);
-      return cached || (await fresh) || (req.mode === 'navigate' ? cache.match('index.html') : Response.error());
-    })
-  );
+let slowUntil = 0;   // dopo un timeout la rete è considerata lenta per un po': si usa subito la copia salvata
+
+async function networkFirst(req) {
+  const cache = await caches.open(CACHE);
+  // 'no-cache': chiede al server se il file è cambiato (risposta breve 304 se uguale)
+  const net = fetch(req, { cache: 'no-cache' }).then(res => {
+    if (res.status >= 500) throw new Error('errore del server');   // sito in panne: meglio la copia salvata
+    if (res.ok) cache.put(req, res.clone());
+    return res;
+  });
+  net.catch(() => {});                                             // l'errore è gestito sotto: niente avvisi in console
+
+  if (Date.now() < slowUntil) {                                    // rete lenta: copia salvata subito, aggiornamento in sottofondo
+    const cached = await cache.match(req, { ignoreSearch: true });
+    if (cached) return cached;
+  }
+  const quick = await Promise.race([
+    net.catch(() => null),
+    new Promise(r => setTimeout(() => r('timeout'), NET_TIMEOUT_MS)),
+  ]);
+  if (quick && quick !== 'timeout') return quick;
+  if (quick === 'timeout') slowUntil = Date.now() + 30000;
+  const cached = await cache.match(req, { ignoreSearch: true });
+  if (cached) return cached;
+  const late = await net.catch(() => null);                        // niente copia: si attende la rete fino in fondo
+  return late || (req.mode === 'navigate' ? cache.match('index.html') : Response.error());
+}
+
+/* L'app chiede quale versione sta girando (per il pannello ⚙️ e per l'avviso di aggiornamento). */
+self.addEventListener('message', e => {
+  if (e.data === 'version' && e.source) e.source.postMessage({ type: 'version', version: VERSION });
 });
 
 /* ---------- Avvisi dei timer (Web Push) ----------

@@ -1,5 +1,8 @@
 'use strict';
 
+/** Deve coincidere con VERSION in sw.js: serve a capire se l'app in uso è quella più recente. */
+const APP_VERSION = 'v9';
+
 /* =========================================================
    Utilità
    ========================================================= */
@@ -1304,8 +1307,38 @@ const isStandalone = () => matchMedia('(display-mode: standalone)').matches || n
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; });
 window.addEventListener('appinstalled', () => { installEvt = null; toast('App installata ✔'); });
 
+/* ---------- Aggiornamenti dell'app ---------- */
+let updateReady = false;
+function showUpdateBanner() {
+  if (updateReady) return;
+  updateReady = true;
+  const b = document.createElement('div');
+  b.className = 'upd'; b.id = 'updBanner';
+  b.innerHTML = '<span>✨ Nuova versione disponibile</span><button data-act="reload-app">Aggiorna</button><button class="x" data-act="upd-later" aria-label="Più tardi">✕</button>';
+  document.body.append(b);
+}
+
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('sw.js').catch(() => { /* offline o non supportato */ });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) navigator.serviceWorker.controller?.postMessage('version');   // il Worker risponde con la sua versione
+  });
+  navigator.serviceWorker.addEventListener('message', e => {
+    if (e.data && e.data.type === 'version' && e.data.version !== APP_VERSION) showUpdateBanner();
+  });
+}
+
+/** Cerca una versione nuova; restituisce 'nuova', 'aggiornata' oppure 'errore'. */
+async function checkForUpdates() {
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) return 'errore';
+    await reg.update();
+    for (let i = 0; i < 40 && (reg.installing || reg.waiting); i++) await new Promise(r => setTimeout(r, 200));   // fino a 8 s
+    await new Promise(r => setTimeout(r, 300));
+    return updateReady ? 'nuova' : 'aggiornata';
+  } catch { return 'errore'; }
 }
 navigator.storage?.persist?.().catch(() => { /* ignora */ });
 
@@ -1333,7 +1366,11 @@ function openBackup() {
       <button class="btn primary" data-act="export">⬇️ Scarica backup (.json)</button>
       <label class="btn">⬆️ Ripristina da backup<input type="file" id="restoreIn" accept="application/json,.json" hidden></label>
     </div>
-    <p class="hint">${state.recipes.length} ricette · ${state.shopping.length} prodotti nella lista</p></div>`;
+    <p class="hint">${state.recipes.length} ricette · ${state.shopping.length} prodotti nella lista</p>
+    ${'serviceWorker' in navigator && location.protocol.startsWith('http') ? `<hr>
+    <h3>Versione dell'app</h3>
+    <p class="hint" id="verMsg">Stai usando la versione <b>${APP_VERSION}</b>.</p>
+    <div class="stack"><button class="btn" data-act="check-update">🔄 Controlla aggiornamenti</button></div>` : `<p class="hint">Versione ${APP_VERSION}</p>`}</div>`;
   $('#bk').showModal();
 }
 
@@ -1441,6 +1478,17 @@ document.addEventListener('click', async e => {
     /* backup */
     case 'backup': openBackup(); break;
     case 'export': exportData(); break;
+
+    /* aggiornamenti */
+    case 'reload-app': location.reload(); break;
+    case 'upd-later': $('#updBanner')?.remove(); break;
+    case 'check-update': {
+      const m = $('#verMsg'); m.textContent = 'Controllo…';
+      const r = await checkForUpdates();
+      m.innerHTML = r === 'nuova' ? '✨ Trovata una versione nuova: tocca <b>Aggiorna</b> nell\'avviso in basso.'
+        : r === 'aggiornata' ? `✔ Sei già alla versione più recente (<b>${APP_VERSION}</b>).` : '⚠️ Non riesco a controllare: verifica la connessione.';
+      break;
+    }
 
     /* avvisi dei timer */
     case 'push-on': {
