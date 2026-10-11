@@ -693,8 +693,8 @@ function ring() {
 function startTimer(min, label) {
   ensureAudio();
   state.timers.push({ id: uid(), label, end: Date.now() + min * 60000, fired: false });
-  save(); renderTimers();
-  toast(`Timer avviato: ${fmtMin(min)}`);
+  save(); renderTimers(); pushSyncTimers();
+  toast(`Timer avviato: ${fmtMin(min) || Math.round(min * 60) + ' secondi'}${pushOn() ? ' · ti avviso anche con l\'app chiusa' : ''}`);
 }
 
 function renderTimers() {
@@ -709,9 +709,14 @@ function renderTimers() {
 function tick() {
   let changed = false;
   state.timers.forEach(t => {
-    if (!t.fired && t.end <= Date.now()) { t.fired = true; changed = true; ring(); toast('⏰ ' + t.label + ': tempo scaduto!'); }
+    if (!t.fired && t.end <= Date.now()) {
+      t.fired = true; changed = true;
+      // se l'app era in background e la notifica è già arrivata, niente suono a sorpresa alla riapertura
+      if (Date.now() - t.end < 20000) ring();
+      toast('⏰ ' + t.label + ': tempo scaduto!');
+    }
   });
-  if (changed) save();
+  if (changed) { save(); pushSyncTimers(); }
   if (state.timers.length) renderTimers();
 }
 setInterval(tick, 1000);
@@ -1190,6 +1195,107 @@ function openSyncJoin() {
 }
 
 /* =========================================================
+   Avvisi dei timer anche ad app chiusa (Web Push)
+   =========================================================
+   L'app registra il dispositivo presso il servizio di notifiche del browser e comunica al Worker
+   i timer attivi. Alla scadenza il Worker manda una notifica "vuota"; il service worker (sw.js)
+   la trasforma in un avviso leggendo l'elenco dei timer salvato qui sotto. */
+const PUSH_FLAG = 'ricettario.push';
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const pushOn = () => { try { return localStorage.getItem(PUSH_FLAG) === '1' && pushSupported() && Notification.permission === 'granted'; } catch { return false; } };
+const b64uToBytes = str => Uint8Array.from(atob(str.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+
+/** Copia dei timer attivi leggibile dal service worker (non può usare localStorage). */
+function storeTimersForSW() {
+  if (!('caches' in window)) return;
+  const list = state.timers.filter(t => !t.fired).map(t => ({ id: t.id, label: t.label, end: t.end }));
+  caches.open('meta-timers').then(c => c.put('timers', new Response(JSON.stringify(list), { headers: { 'Content-Type': 'application/json' } }))).catch(() => { /* ignora */ });
+}
+
+async function pushPost(path, opts = {}) {
+  const ep = importEndpoint();
+  if (!ep) throw new Error('Servizio non configurato');
+  const res = await fetchTimeout(ep + path, opts, 20000);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Errore ' + res.status);
+  return data;
+}
+
+/** Comunica al Worker i timer ancora da far suonare. Se il Worker non risponde, ci riprova alla prossima occasione. */
+async function pushSyncTimers() {
+  storeTimersForSW();
+  if (!pushOn()) return;
+  try {
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (!sub) return;
+    await pushPost('/push', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'set', endpoint: sub.endpoint, timers: state.timers.filter(t => !t.fired).map(t => ({ id: t.id, due: t.end })) })
+    });
+  } catch { /* offline: riproverà */ }
+}
+
+async function pushEnable() {
+  if (!pushSupported()) {
+    throw new Error(isIOS() && !isStandalone()
+      ? 'Su iPhone gli avvisi funzionano solo con l\'app installata: tocca Condividi → Aggiungi alla schermata Home, poi riapri l\'app dall\'icona.'
+      : 'Questo browser non supporta gli avvisi.');
+  }
+  if (!location.protocol.startsWith('http')) throw new Error('Apri il Ricettario dal suo indirizzo web (non dal file sul computer).');
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('Permesso negato. Puoi riattivarlo dalle impostazioni del dispositivo (Notifiche → Ricettario).');
+
+  const reg = await navigator.serviceWorker.ready;
+  const { key } = await pushPost('/push/key');
+  let sub = await reg.pushManager.getSubscription();
+  if (sub && sub.options && sub.options.applicationServerKey &&
+      b64uToBytes(key).join() !== new Uint8Array(sub.options.applicationServerKey).join()) {
+    await sub.unsubscribe(); sub = null;                     // chiavi cambiate: ci si iscrive di nuovo
+  }
+  sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(key) });
+  try { localStorage.setItem(PUSH_FLAG, '1'); } catch { /* ignora */ }
+  await pushSyncTimers();
+}
+
+async function pushDisable() {
+  try { localStorage.removeItem(PUSH_FLAG); } catch { /* ignora */ }
+  try {
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (sub) {
+      await pushPost('/push', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'set', endpoint: sub.endpoint, timers: [] }) }).catch(() => {});
+      await sub.unsubscribe();
+    }
+  } catch { /* ignora */ }
+}
+
+function pushBlock() {
+  if (!importEndpoint()) return '';
+  const head = '<h3>🔔 Avvisi dei timer</h3>';
+  if (!pushSupported()) {
+    return head + `<p class="hint">${isIOS() && !isStandalone()
+      ? 'Per ricevere l\'avviso con l\'app chiusa, installa prima l\'app: tocca <b>Condividi → Aggiungi alla schermata Home</b> e riaprila dall\'icona. Serve iOS 16.4 o successivo.'
+      : 'Questo browser non supporta gli avvisi con l\'app chiusa: il timer suona solo con l\'app aperta.'}</p><hr>`;
+  }
+  if (pushOn()) return head + `
+    <p class="hint" id="pushStatus">✔ Attivi su questo dispositivo: quando un timer scade ricevi una notifica anche con l'app chiusa o lo schermo bloccato.</p>
+    <div class="stack">
+      <button class="btn" data-act="push-test">🧪 Prova con un timer di 20 secondi</button>
+      <button class="btn sm" data-act="push-off">Disattiva gli avvisi</button>
+    </div><p class="hint" id="pushMsg" role="status"></p><hr>`;
+  const denied = Notification.permission === 'denied';
+  return head + `
+    <p class="hint">${denied ? 'Le notifiche sono bloccate per questa app: riattivale dalle impostazioni del dispositivo (Notifiche → Ricettario), poi riprova.'
+      : 'Fai suonare il timer anche quando l\'app è chiusa o lo schermo è bloccato.'}</p>
+    <div class="stack"><button class="btn primary" data-act="push-on">🔔 Attiva gli avvisi</button></div>
+    <p class="hint" id="pushMsg" role="status"></p><hr>`;
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.type === 'push-shown') pushSyncTimers(); });
+}
+
+/* =========================================================
    Installazione come app (PWA)
    ========================================================= */
 let installEvt = null;
@@ -1219,6 +1325,7 @@ function openBackup() {
     <h2>App e sincronizzazione</h2>
     <div class="stack">${installBlock()}</div>
     <hr>
+    ${pushBlock()}
     ${syncBlock()}
     <h3>Backup e ripristino</h3>
     <p class="hint">${state.sync?.code ? 'Con la sincronizzazione i dati sono anche online, ma un backup ogni tanto non guasta.' : 'I dati sono salvati solo in questo browser. Scarica un backup ogni tanto, e usalo per spostare le ricette su un altro dispositivo.'}</p>
@@ -1278,7 +1385,7 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'timer': startTimer(+el.dataset.min, el.dataset.label); break;
-    case 'timer-x': state.timers = state.timers.filter(t => t.id !== id); save(); renderTimers(); break;
+    case 'timer-x': state.timers = state.timers.filter(t => t.id !== id); save(); renderTimers(); pushSyncTimers(); break;
     case 'wake': ui.wantWake = !wake; toggleWake(); break;
 
     /* editor */
@@ -1334,6 +1441,19 @@ document.addEventListener('click', async e => {
     /* backup */
     case 'backup': openBackup(); break;
     case 'export': exportData(); break;
+
+    /* avvisi dei timer */
+    case 'push-on': {
+      const msg = $('#pushMsg'); msg.textContent = 'Attivo gli avvisi…';
+      try { await pushEnable(); openBackup(); toast('Avvisi attivati ✔'); }
+      catch (err) { msg.textContent = err.name === 'AbortError' ? 'Il servizio notifiche del browser non risponde: riprova tra poco.' : err.message; }
+      break;
+    }
+    case 'push-off': await pushDisable(); openBackup(); toast('Avvisi disattivati'); break;
+    case 'push-test':
+      startTimer(1 / 3, 'Prova avvisi');
+      $('#pushMsg').textContent = 'Timer di 20 secondi avviato. Chiudi l\'app o blocca lo schermo: tra 20-60 secondi dovrebbe arrivare la notifica.';
+      break;
 
     /* sincronizzazione */
     case 'sync-create': case 'sync-join': {
@@ -1446,6 +1566,7 @@ document.addEventListener('keydown', e => {
 render();
 
 if (state.sync?.code) { setSyncStatus('busy'); syncNow(); }
+pushSyncTimers();
 setInterval(() => { if (document.visibilityState === 'visible' && state.sync?.code) syncNow(); }, 20000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { scheduleSync(300); tick(); } });
 window.addEventListener('online', () => scheduleSync(300));

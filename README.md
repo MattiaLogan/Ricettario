@@ -25,4 +25,7 @@ Il codice è in `worker/import-worker.js`. Fa due cose:
 - **Sincronizzazione** tra dispositivi (`POST /sync`), che usa un database **D1** collegato al Worker con il nome `DB`.
   Le tabelle si creano da sole. Il codice famiglia non viene mai inviato: arriva solo il suo hash.
 
+- **Avvisi dei timer ad app chiusa** (Web Push: `GET /push/key`, `POST /push`). Serve un **Cron Trigger** `* * * * *`
+  (Worker → Settings → Trigger Events → Cron Triggers). Le chiavi VAPID si creano da sole nel database.
+
 Per aggiornare il Worker: Cloudflare → Workers & Pages → `ricettario-import` → *Edit code* → incolla il file → *Deploy*.
