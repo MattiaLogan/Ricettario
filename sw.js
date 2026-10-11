@@ -2,7 +2,7 @@
    Strategia: si prova prima la rete (così le versioni nuove arrivano al primo avvio, saltando anche la
    cache HTTP di GitHub Pages) e, se è assente o lenta, si usa la copia salvata.
    Quando modifichi i file, incrementa VERSION qui sotto E APP_VERSION in app.js (devono coincidere). */
-const VERSION = 'v9';
+const VERSION = 'v10';
 const CACHE = 'ricettario-' + VERSION;
 const NET_TIMEOUT_MS = 3000;
 const SHELL = [

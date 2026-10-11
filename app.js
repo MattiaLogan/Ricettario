@@ -1,7 +1,7 @@
 'use strict';
 
 /** Deve coincidere con VERSION in sw.js: serve a capire se l'app in uso è quella più recente. */
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 
 /* =========================================================
    Utilità
@@ -235,6 +235,8 @@ function renderRecipeDialog() {
         ${r.cookMin ? `<button class="btn primary" data-act="timer" data-min="${r.cookMin}" data-label="${esc(r.title)} · cottura">⏱ Avvia timer cottura</button>` : ''}
       </div>` : ''}
 
+      ${r.steps.length ? `<button class="btn primary block cook-btn" data-act="cook" data-id="${r.id}">👩‍🍳 Modalità cucina</button>` : ''}
+
       <div>
         <div class="sec">
           <h3>Ingredienti</h3>
@@ -377,6 +379,108 @@ function resizePhoto(file) {
     img.src = url;
   });
 }
+
+/* =========================================================
+   Modalità cucina
+   =========================================================
+   Schermo intero, un passaggio per volta. Pagine: 0 = ingredienti, 1…N = passaggi, N+1 = fine.
+   Lo schermo resta acceso finché è aperta; si scorre con i pulsanti, con il dito o con le frecce. */
+const CK_SIZES = [1, 1.25, 1.55, 1.9];
+function ckSizeLoad() { try { const raw = localStorage.getItem('ricettario.ckSize'), n = +raw; return raw !== null && Number.isInteger(n) && n >= 0 && n < CK_SIZES.length ? n : 1; } catch { return 1; } }
+
+function openCook(id) {
+  const r = recipeById(id); if (!r || !r.steps.length) return;
+  ui.ck = { id, page: 0, peek: false, size: ckSizeLoad(), hadWake: !!wake };
+  ui.wantWake = true; setWake(true);
+  renderCook();
+  const d = $('#ck'); if (!d.open) d.showModal();
+}
+
+function ckIngredients(r) {
+  const f = (ui.servings || +r.servings || 1) / (+r.servings || 1);
+  return `<ul class="ings ck-ings">${r.ingredients.map((i, k) => `
+    <li><label><input type="checkbox" data-chk="i${k}" ${ui.checked.has('i' + k) ? 'checked' : ''}>
+      <span class="qty">${esc([scaledIng(i, f), i.unit].filter(Boolean).join(' '))}</span><span class="nm">${esc(i.name)}</span></label></li>`).join('') || '<li><label>Nessun ingrediente</label></li>'}</ul>`;
+}
+
+function renderCook() {
+  const c = ui.ck, r = c && recipeById(c.id), d = $('#ck');
+  if (!r || !r.steps.length) { if (d.open) d.close(); return; }
+  const last = r.steps.length + 1;
+  c.page = Math.max(0, Math.min(last, c.page));
+  const sv = ui.servings || +r.servings || 1;
+  d.style.setProperty('--ck-fs', CK_SIZES[c.size]);
+
+  let title, body;
+  if (c.peek) {
+    title = 'Ingredienti';
+    body = ckIngredients(r);
+  } else if (c.page === 0) {
+    title = 'Prima di iniziare';
+    body = `<p class="ck-sub">${sv} ${sv === 1 ? 'porzione' : 'porzioni'} · tocca per spuntare quello che hai preparato</p>${ckIngredients(r)}`;
+  } else if (c.page === last) {
+    title = 'Fatto!';
+    body = `<div class="ck-end"><div class="big">🎉</div><h2>Buon appetito!</h2>
+      ${r.notes ? `<div class="notes"><b>💡 Note e consigli</b>${esc(r.notes)}</div>` : ''}
+      <button class="btn" data-act="ck-restart">↺ Ricomincia dall'inizio</button></div>`;
+  } else {
+    const s = r.steps[c.page - 1], label = `${r.title} · passo ${c.page}`;
+    const running = state.timers.some(t => t.label === label && !t.fired);
+    title = `Passo ${c.page} di ${r.steps.length}`;
+    body = `<p class="ck-step">${esc(s.text)}</p>
+      ${+s.minutes ? `<button class="btn ${running ? 'green' : 'primary'} ck-timer" data-act="timer" data-min="${s.minutes}" data-label="${esc(label)}">
+        ${running ? `✔ Timer avviato · ${fmtMin(s.minutes)}` : `⏱ Avvia timer · ${fmtMin(s.minutes)}`}</button>` : ''}`;
+  }
+
+  const pct = Math.round(c.page / last * 100);
+  d.innerHTML = `
+    <div class="ck-top">
+      <button class="icon-btn" data-act="close" aria-label="Esci dalla modalità cucina">✕</button>
+      <div class="ck-title"><b>${esc(r.title)}</b><span>${title}</span></div>
+      <button class="icon-btn" data-act="ck-size" data-d="-1" aria-label="Testo più piccolo" ${c.size === 0 ? 'disabled' : ''}><span style="font-size:.8rem">A</span></button>
+      <button class="icon-btn" data-act="ck-size" data-d="1" aria-label="Testo più grande" ${c.size === CK_SIZES.length - 1 ? 'disabled' : ''}><span style="font-size:1.25rem">A</span></button>
+    </div>
+    <div class="ck-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>
+    <div class="ck-body">${body}</div>
+    <div class="timers in-cook" hidden></div>
+    <div class="ck-nav">
+      ${c.page > 0 && c.page < last ? `<button class="btn ${c.peek ? 'on' : ''}" data-act="ck-ing" aria-label="Ingredienti">${c.peek ? '↩︎' : '🧾'}</button>` : ''}
+      <button class="btn" data-act="ck-prev" ${c.page === 0 && !c.peek ? 'disabled' : ''}>← Indietro</button>
+      ${c.page < last ? `<button class="btn primary" data-act="ck-next">${c.page === 0 ? 'Inizia' : c.page === r.steps.length ? 'Fine' : 'Avanti'} →</button>`
+        : `<button class="btn primary" data-act="close">Chiudi</button>`}
+    </div>`;
+  renderTimers();
+  $('.ck-body', d).scrollTop = 0;
+}
+
+function ckGo(delta) {
+  const c = ui.ck; if (!c) return;
+  if (c.peek) { c.peek = false; if (delta > 0) return renderCook(); }   // dalla vista ingredienti si torna al passo
+  c.page += delta; renderCook();
+}
+
+$('#ck').addEventListener('close', () => {
+  if (ui.ck && !ui.ck.hadWake) { ui.wantWake = false; setWake(false); }
+  ui.ck = null;
+  if ($('#rv').open) renderRecipeDialog();      // le spunte fatte in cucina compaiono anche nella scheda
+});
+
+// scorrimento con il dito: sinistra = avanti, destra = indietro
+(() => {
+  let x0 = 0, y0 = 0;
+  const d = $('#ck');
+  d.addEventListener('touchstart', e => { x0 = e.changedTouches[0].clientX; y0 = e.changedTouches[0].clientY; }, { passive: true });
+  d.addEventListener('touchend', e => {
+    if (!ui.ck || e.target.closest('.timers, .ck-nav, .ck-top')) return;
+    const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > 1.6 * Math.abs(dy)) ckGo(dx < 0 ? 1 : -1);
+  }, { passive: true });
+})();
+document.addEventListener('keydown', e => {
+  if (!ui.ck || !$('#ck').open) return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); ckGo(1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); ckGo(-1); }
+});
 
 /* =========================================================
    Piano settimanale
@@ -726,6 +830,15 @@ setInterval(tick, 1000);
 
 /* ---------- Schermo sempre acceso ---------- */
 let wake = null;
+/** Accende o spegne lo schermo sempre acceso senza ridisegnare nulla. */
+async function setWake(on) {
+  if (!('wakeLock' in navigator)) return false;
+  try {
+    if (on && !wake) { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); }
+    if (!on && wake) { await wake.release(); wake = null; }
+  } catch { /* non concesso (batteria scarica, scheda in background…) */ }
+  return !!wake;
+}
 async function toggleWake() {
   if (!('wakeLock' in navigator)) return toast('Il browser non supporta questa funzione');
   try {
@@ -1148,6 +1261,7 @@ function refreshAfterSync(kinds) {
   if ($('#rv').open && kinds.has('recipe')) {
     if (recipeById(ui.viewId)) renderRecipeDialog(); else $('#rv').close();
   }
+  if (ui.ck && $('#ck').open && kinds.has('recipe')) renderCook();
 }
 
 /* ---------- Attivazione dal dialog ⚙️ ---------- */
@@ -1414,6 +1528,16 @@ document.addEventListener('click', async e => {
       }
       break;
     }
+    case 'cook': openCook(id); break;
+    case 'ck-next': ckGo(1); break;
+    case 'ck-prev': ckGo(-1); break;
+    case 'ck-ing': ui.ck.peek = !ui.ck.peek; renderCook(); break;
+    case 'ck-restart': ui.ck.page = 0; renderCook(); break;
+    case 'ck-size': {
+      ui.ck.size = Math.max(0, Math.min(CK_SIZES.length - 1, ui.ck.size + (+el.dataset.d)));
+      try { localStorage.setItem('ricettario.ckSize', ui.ck.size); } catch { /* ignora */ }
+      renderCook(); break;
+    }
     case 'serv': ui.servings = Math.max(1, ui.servings + (+el.dataset.d)); renderRecipeDialog(); break;
     case 'shop-recipe': {
       const r = recipeById(id), f = ui.servings / (+r.servings || 1);
@@ -1421,8 +1545,8 @@ document.addEventListener('click', async e => {
       save(); render(); toast(`Ingredienti aggiunti alla spesa (${r.ingredients.length})`);
       break;
     }
-    case 'timer': startTimer(+el.dataset.min, el.dataset.label); break;
-    case 'timer-x': state.timers = state.timers.filter(t => t.id !== id); save(); renderTimers(); pushSyncTimers(); break;
+    case 'timer': startTimer(+el.dataset.min, el.dataset.label); if (ui.ck && $('#ck').open) renderCook(); break;
+    case 'timer-x': state.timers = state.timers.filter(t => t.id !== id); save(); renderTimers(); pushSyncTimers(); if (ui.ck && $('#ck').open) renderCook(); break;
     case 'wake': ui.wantWake = !wake; toggleWake(); break;
 
     /* editor */
@@ -1531,7 +1655,7 @@ document.addEventListener('click', async e => {
 });
 
 /* chiusura dialog con click sullo sfondo */
-$$('dialog').forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close(); }));
+$$('dialog:not(.cook)').forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close(); }));
 
 document.addEventListener('input', e => {
   if (e.target.id === 'search') { ui.q = e.target.value; renderGrid(); }
