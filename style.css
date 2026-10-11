@@ -380,3 +380,11 @@ dialog.sheet.cooking[open] { display: flex; flex-direction: column; align-items:
 .ck-nav .btn.on { background: var(--accent-soft); border-color: var(--accent); }
 .ck-nav .btn.primary { flex: 2; }
 .timers.in-cook { position: static; transform: none; width: auto; margin: 0 14px 6px; z-index: auto; }
+
+/* ---------- Piano: persone per pasto ---------- */
+.meal .mt { min-width: 0; }
+.meal .pp { display: flex; align-items: center; flex: none; font-size: .78rem; font-weight: 700; color: var(--muted); }
+.meal .pp button { width: 26px; height: 30px; border-radius: 8px; font-size: 1rem; line-height: 1; color: var(--muted); }
+.meal .pp button:hover { background: var(--accent-soft); color: var(--accent); }
+.meal .pp span { min-width: 34px; text-align: center; white-space: nowrap; }
+.pk-people { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: var(--accent-soft); border-radius: 14px; padding: 10px 12px 10px 16px; font-weight: 700; }

@@ -1,7 +1,7 @@
 'use strict';
 
 /** Deve coincidere con VERSION in sw.js: serve a capire se l'app in uso è quella più recente. */
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 
 /* =========================================================
    Utilità
@@ -27,6 +27,8 @@ function parseQty(s) {
   return /^\d*\.?\d+$/.test(s) ? parseFloat(s) : null;
 }
 const fmtQty = n => n == null ? '' : String(Math.round(n * 100) / 100).replace('.', ',');
+/** Arrotonda come si farebbe a mano: 107 g invece di 106,67 g; 1,5 cucchiai; 0,33. */
+const niceQty = n => n >= 100 ? Math.round(n) : n >= 10 ? Math.round(n * 10) / 10 : Math.round(n * 100) / 100;
 
 function fmtMin(m) {
   m = Math.round(+m || 0);
@@ -196,16 +198,17 @@ function renderGrid() {
 }
 
 /* ---------- Dettaglio ricetta ---------- */
-function openRecipe(id) {
+/** `servings`: porzioni da mostrare subito (es. quelle decise nel piano); se assenti, quelle della ricetta. */
+function openRecipe(id, servings) {
   const r = recipeById(id); if (!r) return;
-  ui.viewId = id; ui.servings = +r.servings || 1; ui.checked = new Set();
+  ui.viewId = id; ui.servings = servings || +r.servings || 1; ui.checked = new Set();
   renderRecipeDialog();
   const d = $('#rv'); if (!d.open) d.showModal();
 }
 
 function scaledIng(i, factor) {
   const n = parseQty(i.qty);
-  return n != null ? fmtQty(n * factor) : String(i.qty || '').trim();
+  return n != null ? fmtQty(niceQty(n * factor)) : String(i.qty || '').trim();
 }
 
 function renderRecipeDialog() {
@@ -486,6 +489,12 @@ document.addEventListener('keydown', e => {
    Piano settimanale
    ========================================================= */
 const SLOTS = [['p', '☀️ Pranzo'], ['c', '🌙 Cena']];
+const PEOPLE_KEY = 'ricettario.planPeople';
+/** Per quante persone si cucina di solito (ultima scelta fatta su questo dispositivo; all'inizio 2). */
+function planPeople() { try { const n = +localStorage.getItem(PEOPLE_KEY); return Number.isInteger(n) && n >= 1 && n <= 30 ? n : 2; } catch { return 2; } }
+function setPlanPeople(n) { try { localStorage.setItem(PEOPLE_KEY, n); } catch { /* ignora */ } }
+/** Persone di un pasto in programma: quelle scelte, altrimenti (pasti vecchi) le porzioni della ricetta. */
+const mealPeople = (e, r) => e.servings || +r.servings || 1;
 const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const mondayOf = d => addDays(new Date(d.getFullYear(), d.getMonth(), d.getDate()), -((d.getDay() + 6) % 7));
@@ -508,7 +517,8 @@ function renderPlan() {
         ${entries.map(e => {
           const r = e.rid && recipeById(e.rid);
           return `<div class="meal ${e.rid && !r ? 'gone' : ''}">
-            ${r ? `<button class="mt" data-act="open" data-id="${r.id}">${emojiFor(r.category)} ${esc(r.title)}</button>`
+            ${r ? `<button class="mt" data-act="open" data-id="${r.id}" data-serv="${mealPeople(e, r)}">${emojiFor(r.category)} ${esc(r.title)}</button>
+              <span class="pp"><button data-act="plan-serv" data-d="-1" data-date="${key}" data-slot="${s}" data-id="${e.id}" aria-label="Meno persone">−</button><span>👥 ${mealPeople(e, r)}</span><button data-act="plan-serv" data-d="1" data-date="${key}" data-slot="${s}" data-id="${e.id}" aria-label="Più persone">＋</button></span>`
                : `<span class="mt">${e.rid ? 'Ricetta eliminata' : '✎ ' + esc(e.text)}</span>`}
             <button class="x" data-act="plan-del" data-date="${key}" data-slot="${s}" data-id="${e.id}" aria-label="Rimuovi">✕</button></div>`;
         }).join('')}</div>`;
@@ -529,16 +539,18 @@ function renderPlan() {
       <button class="btn green" data-act="plan-shop" ${planned ? '' : 'disabled'}>🛒 Aggiungi alla spesa gli ingredienti della settimana</button>
       <button class="btn sm danger" data-act="plan-clear" ${Object.keys(state.plan).some(k => k >= ymd(ui.week) && k <= ymd(end)) ? '' : 'disabled'}>Svuota settimana</button>
     </div>
-    <p class="hint">Per ogni ricetta si usano le porzioni indicate nella ricetta. Vengono aggiunti solo i giorni da oggi in poi, e le quantità uguali si sommano.</p>`;
+    <p class="hint">Gli ingredienti vengono calcolati per il numero di persone (👥) di ogni pasto. Vengono aggiunti solo i giorni da oggi in poi, e le quantità uguali si sommano.</p>`;
 }
 
 function openPicker(date, slot) {
-  ui.pick = { date, slot };
+  ui.pick = { date, slot, people: planPeople() };
   const d = new Date(date + 'T12:00:00');
   const label = SLOTS.find(s => s[0] === slot)[1];
   $('#pk').innerHTML = `<div class="rv-body">
     <button class="close" data-act="close" style="position:static;float:none;margin:0 0 -10px auto;display:block" aria-label="Chiudi">✕</button>
     <div><h2>Cosa si mangia?</h2><p class="hint" style="margin-top:4px">${esc(dayName(d, { weekday: 'long', day: 'numeric', month: 'long' }))} · ${label}</p></div>
+    <div class="pk-people"><span>👥 Per quante persone?</span>
+      <div class="serv"><button data-act="pk-people" data-d="-1" aria-label="Meno persone">−</button><span id="pkPeople">${ui.pick.people} ${ui.pick.people === 1 ? 'persona' : 'persone'}</span><button data-act="pk-people" data-d="1" aria-label="Più persone">＋</button></div></div>
     <input id="pkSearch" type="search" placeholder="Cerca nel ricettario…" autocomplete="off"
       style="padding:12px 16px;border-radius:14px;border:1px solid var(--line);background:var(--card);color:var(--ink);width:100%">
     <div class="stack" id="pkList"></div>
@@ -572,7 +584,8 @@ function planToShopping() {
     if (!day || ymd(addDays(ui.week, k)) < todayS) continue;
     SLOTS.forEach(([s]) => (day[s] || []).forEach(e => {
       const r = e.rid && recipeById(e.rid); if (!r) return;
-      r.ingredients.forEach(i => addShopItem({ name: i.name, qty: parseQty(i.qty), unit: i.unit, from: 'Piano settimanale' }));
+      const f = mealPeople(e, r) / (+r.servings || 1);
+      r.ingredients.forEach(i => { const q = parseQty(i.qty); addShopItem({ name: i.name, qty: q != null ? niceQty(q * f) : null, unit: i.unit, from: 'Piano settimanale' }); });
       n++;
     }));
   }
@@ -1508,7 +1521,7 @@ document.addEventListener('click', async e => {
     case 'tab': ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); break;
     case 'new': openEditor(); break;
     case 'import-recipe': openImportRecipe(); break;
-    case 'open': openRecipe(id); break;
+    case 'open': openRecipe(id, +el.dataset.serv || 0); break;
     case 'edit': openEditor(id); break;
     case 'close': dlg?.close(); break;
     case 'cat': ui.cat = el.dataset.cat; renderChips(); renderGrid(); break;
@@ -1558,7 +1571,21 @@ document.addEventListener('click', async e => {
     /* piano settimanale */
     case 'week': ui.week = el.dataset.d === '0' ? mondayOf(new Date()) : addDays(ui.week, 7 * +el.dataset.d); renderPlan(); break;
     case 'plan-add': openPicker(el.dataset.date, el.dataset.slot); break;
-    case 'pick': planAdd({ rid: id }); break;
+    case 'pick': planAdd({ rid: id, servings: ui.pick.people }); break;
+    case 'pk-people': {
+      ui.pick.people = Math.max(1, Math.min(30, ui.pick.people + (+el.dataset.d)));
+      setPlanPeople(ui.pick.people);
+      $('#pkPeople').textContent = `${ui.pick.people} ${ui.pick.people === 1 ? 'persona' : 'persone'}`;
+      break;
+    }
+    case 'plan-serv': {
+      const e = (state.plan[el.dataset.date]?.[el.dataset.slot] || []).find(x => x.id === id), r = e && recipeById(e.rid);
+      if (!e || !r) break;
+      e.servings = Math.max(1, Math.min(30, mealPeople(e, r) + (+el.dataset.d)));
+      setPlanPeople(e.servings);
+      save(); renderPlan();
+      break;
+    }
     case 'plan-del': {
       const day = state.plan[el.dataset.date];
       day[el.dataset.slot] = day[el.dataset.slot].filter(e => e.id !== id);
